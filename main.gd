@@ -14,7 +14,7 @@ const COLORS := [
 const SHAPES := ["square", "triangle", "tall", "big"]
 const SHAPE_LABELS := {"square": "Square", "triangle": "Triangle", "tall": "Tall\nTriangle", "big": "Big\nSquare"}
 const SAVE_PATH := "user://world.json"
-const T := 0.03  # tile thickness
+const T := 0.05  # tile (frame) thickness
 const SNAP_EPS := 0.07  # how close corners must get to "click" together
 const H := 0.8660254  # height of a unit equilateral triangle
 
@@ -65,6 +65,7 @@ var color_buttons: Array = []
 var demo := false
 var shot_path := ""
 var frame_count := 0
+var cam_override := PackedFloat64Array()
 
 
 func _ready() -> void:
@@ -73,6 +74,8 @@ func _ready() -> void:
 			demo = true
 		elif a.begins_with("--shot="):
 			shot_path = a.substr(7)
+		elif a.begins_with("--cam="):
+			cam_override = a.substr(6).split_floats(",")
 	setup_world()
 	setup_ghost()
 	setup_audio()
@@ -82,6 +85,11 @@ func _ready() -> void:
 		build_demo()
 	else:
 		load_world()
+	if cam_override.size() == 6:
+		cam_yaw = cam_override[0]
+		cam_pitch = cam_override[1]
+		cam_dist = cam_override[2]
+		cam_target = Vector3(cam_override[3], cam_override[4], cam_override[5])
 	if "--play" in OS.get_cmdline_user_args():
 		set_play(true)
 	refresh_ui()
@@ -91,70 +99,191 @@ func _ready() -> void:
 
 func setup_world() -> void:
 	var env := Environment.new()
-	var sky_mat := ProceduralSkyMaterial.new()
-	sky_mat.sky_top_color = Color("6fb6ff")
-	sky_mat.sky_horizon_color = Color("d9eeff")
-	sky_mat.ground_horizon_color = Color("d9eeff")
-	sky_mat.ground_bottom_color = Color("9cc98a")
+	var sky_mat := PanoramaSkyMaterial.new()
+	sky_mat.panorama = load("res://assets/textures/sky.hdr")
+	sky_mat.energy_multiplier = 1.1
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
+	sky.radiance_size = Sky.RADIANCE_SIZE_128
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.6
+	env.ambient_light_energy = 0.8
+	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
+	env.tonemap_exposure = 1.0
 	env.glow_enabled = true
-	env.glow_intensity = 0.3
+	env.glow_intensity = 0.4
+	env.glow_hdr_threshold = 1.2
+	env.fog_enabled = true
+	env.fog_mode = Environment.FOG_MODE_DEPTH
+	env.fog_light_color = Color("bcd8f5")
+	env.fog_depth_begin = 40.0
+	env.fog_depth_end = 260.0
+	env.fog_density = 0.35
+	env.fog_sky_affect = 0.0
+	env.adjustment_enabled = true
+	env.adjustment_saturation = 1.2
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-55, -35, 0)
-	sun.light_energy = 1.1
+	sun.rotation_degrees = Vector3(-48, -30, 0)
+	sun.light_energy = 1.6
+	sun.light_color = Color("fff3e0")
 	sun.shadow_enabled = true
+	sun.shadow_blur = 1.5
+	sun.directional_shadow_max_distance = 40.0
 	add_child(sun)
 
-	# Ground: a big play mat with a faint grid so tiles line up.
-	var ground := StaticBody3D.new()
-	ground.collision_layer = 2
-	ground.collision_mask = 0
-	var gshape := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(400, 1, 400)
-	gshape.shape = box
-	gshape.position.y = -0.5
-	ground.add_child(gshape)
-	var gmesh := MeshInstance3D.new()
-	var plane := PlaneMesh.new()
-	plane.size = Vector2(400, 400)
-	gmesh.mesh = plane
-	var shader := Shader.new()
-	shader.code = """
-shader_type spatial;
-uniform vec3 base_color : source_color = vec3(0.47, 0.72, 0.38);
-varying vec3 wpos;
-void vertex() { wpos = (MODEL_MATRIX * vec4(VERTEX, 1.0)).xyz; }
-void fragment() {
-	vec2 f = fract(wpos.xz);
-	vec2 d = min(f, 1.0 - f);
-	vec2 w = fwidth(wpos.xz) * 1.5;
-	float line = 1.0 - min(smoothstep(0.0, w.x + 0.01, d.x), smoothstep(0.0, w.y + 0.01, d.y));
-	float fade = clamp(1.0 - length(wpos.xz) / 60.0, 0.0, 1.0);
-	ALBEDO = mix(base_color, base_color * 0.82, line * fade);
-	ROUGHNESS = 0.95;
-}
-"""
-	var smat := ShaderMaterial.new()
-	smat.shader = shader
-	gmesh.material_override = smat
-	ground.add_child(gmesh)
-	add_child(ground)
+	setup_islands()
+	setup_cloud_sea()
+	scatter_grass.call_deferred()
 
 	cam = Camera3D.new()
 	cam.fov = 55
+	cam.far = 600
 	add_child(cam)
 
+
+func setup_islands() -> void:
+	var grass := ShaderMaterial.new()
+	grass.shader = load("res://shaders/island_top.gdshader")
+	grass.set_shader_parameter("albedo_tex", load("res://assets/textures/grass_albedo.jpg"))
+	grass.set_shader_parameter("normal_tex", load("res://assets/textures/grass_normal.jpg"))
+	var grass_decor := grass.duplicate()
+	grass_decor.set_shader_parameter("grid_strength", 0.0)
+	var rock := ORMMaterial3D.new()
+	rock.albedo_texture = load("res://assets/textures/rock_albedo.jpg")
+	rock.normal_enabled = true
+	rock.normal_texture = load("res://assets/textures/rock_normal.jpg")
+	rock.orm_texture = load("res://assets/textures/rock_arm.jpg")
+	rock.uv1_triplanar = true
+	rock.uv1_scale = Vector3(0.35, 0.35, 0.35)
+	rock.vertex_color_use_as_albedo = true
+	var bark := rock.duplicate()
+	bark.albedo_color = Color("8a6648")
+	bark.uv1_scale = Vector3(1.2, 1.2, 1.2)
+	var leaves := StandardMaterial3D.new()
+	leaves.albedo_color = Color("5f9e3a")
+	leaves.vertex_color_use_as_albedo = true
+	leaves.roughness = 0.75
+	leaves.backlight_enabled = true
+	leaves.backlight = Color("3d6b1f")
+	var mats := {"Grass": grass, "Rock": rock, "Bark": bark, "Leaves": leaves}
+
+	for path in ["res://assets/islands/main.glb", "res://assets/islands/decor.glb"]:
+		var scene: Node3D = (load(path) as PackedScene).instantiate()
+		add_child(scene)
+		for mi in scene.find_children("*", "MeshInstance3D", true, false):
+			var m: Mesh = (mi as MeshInstance3D).mesh
+			for i in m.get_surface_count():
+				var src := m.surface_get_material(i)
+				var key := src.resource_name if src else ""
+				if mats.has(key):
+					var use: Material = mats[key]
+					if key == "Grass" and path.ends_with("decor.glb"):
+						use = grass_decor
+					(mi as MeshInstance3D).set_surface_override_material(i, use)
+			# Islands are solid ground (you can walk off the edge though!).
+			if (mi as Node).name.contains("Island") or (mi as Node).name.begins_with("Sat"):
+				(mi as MeshInstance3D).create_trimesh_collision()
+				for body in (mi as Node).find_children("*", "StaticBody3D", true, false):
+					(body as StaticBody3D).collision_layer = 2
+					(body as StaticBody3D).collision_mask = 0
+
+
+func grass_tuft_mesh() -> ArrayMesh:
+	# A handful of tapered blades fanned around the origin.
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7
+	for b in 6:
+		var a := rng.randf() * TAU
+		var dir := Vector3(cos(a), 0, sin(a))
+		var side := Vector3(-dir.z, 0, dir.x) * 0.018
+		var base := dir * rng.randf_range(0.0, 0.05)
+		var h := rng.randf_range(0.14, 0.28)
+		var lean := dir * rng.randf_range(0.03, 0.09)
+		var mid := base + lean * 0.4 + Vector3(0, h * 0.55, 0)
+		var top := base + lean + Vector3(0, h, 0)
+		var quad := [
+			[base - side, 0.0], [base + side, 0.0], [mid + side * 0.6, 0.55],
+			[base - side, 0.0], [mid + side * 0.6, 0.55], [mid - side * 0.6, 0.55],
+			[mid - side * 0.6, 0.55], [mid + side * 0.6, 0.55], [top, 1.0],
+		]
+		for v in quad:
+			st.set_normal(Vector3.UP)
+			st.set_uv(Vector2(0, v[1]))
+			st.add_vertex(v[0])
+	return st.commit()
+
+
+func scatter_grass() -> void:
+	# Wait for the island collision to exist, then drop tufts onto it.
+	await get_tree().physics_frame
+	await get_tree().physics_frame
+	var space := get_world_3d().direct_space_state
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 42
+	var xforms: Array = []
+	var colors: Array = []
+	for i in 9000:
+		if xforms.size() >= 3200:
+			break
+		var a := rng.randf() * TAU
+		var r := sqrt(rng.randf()) * 8.8
+		if r < 5.7 and rng.randf() > 0.04:
+			continue  # keep the build area mostly clear
+		var p := Vector3(cos(a) * r, 2.0, sin(a) * r)
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p, p + Vector3.DOWN * 4.0, 2))
+		if hit.is_empty() or (hit.normal as Vector3).y < 0.6:
+			continue
+		var s := rng.randf_range(0.7, 1.4)
+		var basis := Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.8, 1.3), s))
+		xforms.append(Transform3D(basis, hit.position))
+		var g := rng.randf_range(0.85, 1.15)
+		colors.append(Color(g * rng.randf_range(0.9, 1.1), g, g * 0.9))
+	var mm := MultiMesh.new()
+	mm.transform_format = MultiMesh.TRANSFORM_3D
+	mm.use_colors = true
+	mm.mesh = grass_tuft_mesh()
+	mm.instance_count = xforms.size()
+	for i in xforms.size():
+		mm.set_instance_transform(i, xforms[i])
+		mm.set_instance_color(i, colors[i])
+	var mmi := MultiMeshInstance3D.new()
+	mmi.multimesh = mm
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/grass.gdshader")
+	mmi.material_override = mat
+	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mmi)
+
+
+func setup_cloud_sea() -> void:
+	var noise := NoiseTexture2D.new()
+	noise.width = 512
+	noise.height = 512
+	noise.seamless = true
+	var fnl := FastNoiseLite.new()
+	fnl.frequency = 0.008
+	fnl.fractal_octaves = 5
+	noise.noise = fnl
+	var mat := ShaderMaterial.new()
+	mat.shader = load("res://shaders/cloud_sea.gdshader")
+	mat.set_shader_parameter("noise_tex", noise)
+	for layer in [[-16.0, 0.0], [-22.0, 0.37]]:
+		var mi := MeshInstance3D.new()
+		var plane := PlaneMesh.new()
+		plane.size = Vector2(600, 600)
+		mi.mesh = plane
+		mi.material_override = mat
+		mi.position = Vector3(layer[1] * 100.0, layer[0], 0)
+		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(mi)
 
 func setup_ghost() -> void:
 	ghost_mat = StandardMaterial3D.new()
@@ -281,19 +410,12 @@ func panel_mesh(shape: String) -> ArrayMesh:
 	return m
 
 
-func panel_mat(ci: int) -> StandardMaterial3D:
+func panel_mat(ci: int) -> ShaderMaterial:
 	var key := "p%d" % ci
 	if not mat_cache.has(key):
-		var c: Color = COLORS[ci]
-		var m := StandardMaterial3D.new()
-		m.albedo_color = Color(c.r, c.g, c.b, 0.68)
-		m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		m.cull_mode = BaseMaterial3D.CULL_DISABLED
-		m.roughness = 0.12
-		m.metallic_specular = 0.8
-		m.emission_enabled = true
-		m.emission = c
-		m.emission_energy_multiplier = 0.15
+		var m := ShaderMaterial.new()
+		m.shader = load("res://shaders/tile_panel.gdshader")
+		m.set_shader_parameter("tint", COLORS[ci])
 		mat_cache[key] = m
 	return mat_cache[key]
 
@@ -302,35 +424,38 @@ func frame_mat(ci: int) -> StandardMaterial3D:
 	var key := "f%d" % ci
 	if not mat_cache.has(key):
 		var m := StandardMaterial3D.new()
-		m.albedo_color = (COLORS[ci] as Color).lightened(0.1)
-		m.roughness = 0.35
+		m.albedo_color = (COLORS[ci] as Color).darkened(0.05)
+		m.roughness = 0.25
+		m.clearcoat_enabled = true
+		m.clearcoat = 0.7
+		m.clearcoat_roughness = 0.15
+		m.backlight_enabled = true
+		m.backlight = (COLORS[ci] as Color).darkened(0.4)
 		mat_cache[key] = m
 	return mat_cache[key]
 
 
-func add_frame(parent: Node3D, shape: String, mat: Material) -> void:
-	# The solid plastic rim around each translucent panel.
-	var v := shape_verts(shape)
-	var n := v.size()
-	var c := centroid(v)
-	for i in n:
-		var a := v[i]
-		var b := v[(i + 1) % n]
-		var d := b - a
-		var length := d.length()
-		var x := d / length
-		var inward := c - (a + b) / 2
-		inward = (inward - x * inward.dot(x)).normalized()
-		var key := "box%.3f" % length
-		if not mesh_cache.has(key):
-			var bm := BoxMesh.new()
-			bm.size = Vector3(length - 0.03, T + 0.018, 0.07)
-			mesh_cache[key] = bm
-		var mi := MeshInstance3D.new()
-		mi.mesh = mesh_cache[key]
-		mi.material_override = mat
-		mi.transform = Transform3D(Basis(x, Vector3.UP, x.cross(Vector3.UP)), (a + b) / 2 + inward * 0.036)
-		parent.add_child(mi)
+func rivet_mat() -> StandardMaterial3D:
+	if not mat_cache.has("rivet"):
+		var m := StandardMaterial3D.new()
+		m.albedo_color = Color("dfe3ea")
+		m.metallic = 1.0
+		m.roughness = 0.22
+		mat_cache["rivet"] = m
+	return mat_cache["rivet"]
+
+
+func tile_parts(shape: String) -> Dictionary:
+	# Meshes modelled in Blender (art/src/tiles.py): Frame, Panel, Rivets.
+	var key := "parts_" + shape
+	if not mesh_cache.has(key):
+		var scene: Node = (load("res://assets/tiles/%s.glb" % shape) as PackedScene).instantiate()
+		var parts := {}
+		for mi in scene.find_children("*", "MeshInstance3D", true, false):
+			parts[(mi as Node).name] = (mi as MeshInstance3D).mesh
+		scene.free()
+		mesh_cache[key] = parts
+	return mesh_cache[key]
 
 
 # ---------------------------------------------------------------- tiles in the world
@@ -340,11 +465,17 @@ func spawn_tile(shape: String, color: int, xf: Transform3D) -> Dictionary:
 	body.collision_layer = 1
 	body.collision_mask = 0
 	body.transform = xf
-	var mi := MeshInstance3D.new()
-	mi.mesh = panel_mesh(shape)
-	mi.material_override = panel_mat(color)
-	body.add_child(mi)
-	add_frame(body, shape, frame_mat(color))
+	var visual := Node3D.new()
+	body.add_child(visual)
+	var parts := tile_parts(shape)
+	var mats := {"Frame": frame_mat(color), "Panel": panel_mat(color), "Rivets": rivet_mat()}
+	for part in mats:
+		var mi := MeshInstance3D.new()
+		mi.mesh = parts[part]
+		mi.material_override = mats[part]
+		if part == "Panel":
+			mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		visual.add_child(mi)
 	var cs := CollisionShape3D.new()
 	var shp := ConvexPolygonShape3D.new()
 	var pts := PackedVector3Array()
@@ -362,10 +493,9 @@ func spawn_tile(shape: String, color: int, xf: Transform3D) -> Dictionary:
 	body.set_meta("tile", t)
 	tiles.append(t)
 	# Little "pop" as it snaps in.
-	mi.scale = Vector3(0.8, 0.8, 0.8)
-	create_tween().tween_property(mi, "scale", Vector3.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	visual.scale = Vector3(0.8, 0.8, 0.8)
+	create_tween().tween_property(visual, "scale", Vector3.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	return t
-
 
 func remove_tile(t: Dictionary, record := true) -> void:
 	for i in tiles.size():
@@ -619,7 +749,7 @@ func update_hover() -> void:
 			candidates = edge_candidates(hover_tile, ei, pos, view_side, cur_shape)
 			cand_index = 0
 	else:
-		if erase_mode:
+		if erase_mode or pos.y < -0.05 or Vector2(pos.x, pos.z).length() > 6.6:
 			return
 		var key := "g%d:%d:%s:%d:%d" % [floori(pos.x * 2), floori(pos.z * 2), cur_shape, ground_rot, tiles.size()]
 		if key != hover_key:
