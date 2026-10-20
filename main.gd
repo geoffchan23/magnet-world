@@ -14,6 +14,9 @@ const COLORS := [
 const SHAPES := ["square", "triangle", "tall", "big"]
 const SHAPE_LABELS := {"square": "Square", "triangle": "Triangle", "tall": "Tall\nTriangle", "big": "Big\nSquare"}
 const SAVE_PATH := "user://world.json"
+const SETTINGS_PATH := "user://settings.json"
+const CHARACTERS := ["kid", "fox", "robot", "dino"]
+const CHARACTER_NAMES := {"kid": "Kid", "fox": "Fox", "robot": "Robot", "dino": "Dino"}
 const T := 0.05  # tile (frame) thickness
 const SNAP_EPS := 0.07  # how close corners must get to "click" together
 const H := 0.8660254  # height of a unit equilateral triangle
@@ -59,6 +62,8 @@ var status_label: Label
 var play_button: Button
 var erase_button: Button
 var undo_button: Button
+var char_button: Button
+var picker: Control
 var shape_buttons := {}
 var color_buttons: Array = []
 
@@ -90,6 +95,13 @@ func _ready() -> void:
 		cam_pitch = cam_override[1]
 		cam_dist = cam_override[2]
 		cam_target = Vector3(cam_override[3], cam_override[4], cam_override[5])
+	for a in OS.get_cmdline_user_args():
+		if a.begins_with("--char="):
+			player.set_character(a.substr(7))
+		elif a == "--picker":
+			show_picker(true)
+		elif a == "--walk":
+			player.auto_walk = true
 	if "--play" in OS.get_cmdline_user_args():
 		set_play(true)
 	refresh_ui()
@@ -307,50 +319,17 @@ func setup_player() -> void:
 	player.collision_mask = 1 | 2
 	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
-	cap.radius = 0.13
-	cap.height = 0.5
+	cap.radius = 0.14
+	cap.height = 0.55
 	cs.shape = cap
-	cs.position.y = 0.25
+	cs.position.y = 0.275
 	player.add_child(cs)
-
 	var visual := Node3D.new()
 	visual.name = "Visual"
 	player.add_child(visual)
-	var body := MeshInstance3D.new()
-	var cm := CapsuleMesh.new()
-	cm.radius = 0.13
-	cm.height = 0.5
-	body.mesh = cm
-	body.position.y = 0.25
-	var bm := StandardMaterial3D.new()
-	bm.albedo_color = Color("ff8a3d")
-	bm.roughness = 0.5
-	body.material_override = bm
-	visual.add_child(body)
-	var white := StandardMaterial3D.new()
-	white.albedo_color = Color.WHITE
-	var black := StandardMaterial3D.new()
-	black.albedo_color = Color("1b1b1b")
-	for sx in [-0.055, 0.055]:
-		var eye := MeshInstance3D.new()
-		var es := SphereMesh.new()
-		es.radius = 0.04
-		es.height = 0.08
-		eye.mesh = es
-		eye.material_override = white
-		eye.position = Vector3(sx, 0.38, -0.11)
-		visual.add_child(eye)
-		var pupil := MeshInstance3D.new()
-		var ps := SphereMesh.new()
-		ps.radius = 0.02
-		ps.height = 0.04
-		pupil.mesh = ps
-		pupil.material_override = black
-		pupil.position = Vector3(sx, 0.38, -0.145)
-		visual.add_child(pupil)
 	add_child(player)
+	player.set_character(load_settings().get("character", "kid"))
 	set_player_active(false)
-
 
 func set_player_active(on: bool) -> void:
 	player.visible = on
@@ -851,6 +830,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 				flip()
 			KEY_TAB:
 				set_play(not play_mode)
+			KEY_P:
+				show_picker(not picker.visible)
+			KEY_ESCAPE:
+				show_picker(false)
 
 
 func _process(delta: float) -> void:
@@ -981,7 +964,11 @@ func setup_ui() -> void:
 	row.add_child(VSeparator.new())
 	erase_button = add_button(row, "Eraser", Vector2(96, 72), func(): set_erase(not erase_mode))
 	undo_button = add_button(row, "Undo", Vector2(80, 72), undo)
+	char_button = add_button(row, "", Vector2(76, 72), func(): show_picker(not picker.visible))
+	char_button.expand_icon = true
+	char_button.tooltip_text = "Pick your explorer (P)"
 	play_button = add_button(row, "Play!", Vector2(110, 72), func(): set_play(not play_mode))
+	build_picker(layer)
 
 	hint_label = Label.new()
 	hint_label.position = Vector2(18, 14)
@@ -1010,12 +997,93 @@ func refresh_ui() -> void:
 		style_button(color_buttons[i], COLORS[i], i == cur_color and not erase_mode)
 	style_button(erase_button, Color("b53a3a") if erase_mode else Color("3a4a63"), erase_mode)
 	style_button(undo_button, Color("3a4a63"), false)
+	for b in shape_buttons.values() + color_buttons + [erase_button, undo_button]:
+		(b as Button).visible = not play_mode
+	for sep in (char_button.get_parent() as Node).find_children("*", "VSeparator", false, false):
+		(sep as Control).visible = not play_mode
+	char_button.icon = load("res://assets/portraits/%s.png" % player.character)
+	style_button(char_button, Color("3a4a63"), false)
 	play_button.text = "Build!" if play_mode else "Play!"
 	style_button(play_button, Color("2f9e55"), false)
 	if play_mode:
 		hint_label.text = "WASD / arrows: walk   Space: jump   Right-drag or Q/E: turn camera   Tab: back to building"
 	else:
 		hint_label.text = "Click: place tile   Right-click: remove   R: flip   1-4: shape   C: colour   Z: undo\nRight-drag / two-finger swipe: spin   Scroll / pinch: zoom   WASD: move   Tab: play"
+
+
+func build_picker(layer: CanvasLayer) -> void:
+	# Full-screen "Who do you want to be?" chooser with a big card per character.
+	picker = ColorRect.new()
+	(picker as ColorRect).color = Color(0.05, 0.08, 0.15, 0.55)
+	picker.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	picker.mouse_filter = Control.MOUSE_FILTER_STOP
+	picker.visible = false
+	layer.add_child(picker)
+	var centre := CenterContainer.new()
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	picker.add_child(centre)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 22)
+	centre.add_child(col)
+	var title := Label.new()
+	title.text = "Who do you want to be?"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 44)
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
+	title.add_theme_constant_override("outline_size", 10)
+	col.add_child(title)
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 22)
+	col.add_child(row)
+	for c in CHARACTERS:
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(240, 300)
+		b.icon = load("res://assets/portraits/%s.png" % c)
+		b.expand_icon = true
+		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
+		b.text = CHARACTER_NAMES[c]
+		b.add_theme_font_size_override("font_size", 30)
+		b.set_meta("character", c)
+		b.pressed.connect(pick_character.bind(c))
+		row.add_child(b)
+	var close := add_button(col, "Close", Vector2(160, 64), func(): show_picker(false))
+	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	style_button(close, Color("3a4a63"), false)
+
+
+func show_picker(on: bool) -> void:
+	picker.visible = on
+	if on:
+		for b in picker.find_children("*", "Button", true, false):
+			if (b as Node).has_meta("character"):
+				style_button(b, Color("ffffff") if b.get_meta("character") == player.character else Color("dfe6f2"), b.get_meta("character") == player.character)
+				(b as Button).add_theme_color_override("font_color", Color("1d2a40"))
+				(b as Button).add_theme_color_override("font_hover_color", Color("1d2a40"))
+
+
+func pick_character(c: String) -> void:
+	player.set_character(c)
+	save_settings({"character": c})
+	play_sfx(click_snd)
+	show_picker(false)
+	refresh_ui()
+
+
+func load_settings() -> Dictionary:
+	if not FileAccess.file_exists(SETTINGS_PATH):
+		return {}
+	var d = JSON.parse_string(FileAccess.get_file_as_string(SETTINGS_PATH))
+	return d if d is Dictionary else {}
+
+
+func save_settings(d: Dictionary) -> void:
+	if demo:
+		return
+	var f := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
+	if f:
+		f.store_string(JSON.stringify(d))
 
 
 # ---------------------------------------------------------------- audio
