@@ -20,6 +20,7 @@ Everything works from the keyboard (an on-screen controls card shows the keys; H
 | Q / E | zoom out / in | Q / E | zoom |
 | Space | place tile | P | pick explorer |
 | R | flip / turn the tile | Tab | back to building |
+| F / G | tilt the tile to any angle (stand ground tiles up) | | |
 | Backspace | remove tile | | |
 | 1–5, C, Z, X | shape, colour, undo, eraser | | |
 | I | Items menu (add our couch!) | | |

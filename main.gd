@@ -49,6 +49,15 @@ var hover_ground := false
 var hover_tile = null
 var candidates: Array = []
 var cand_index := 0
+var tilt := 0.0  # extra hinge angle (degrees) added with F / G - any angle you like
+var hinge_pivot := Vector3.ZERO  # the edge the ghost tile swings around
+var hinge_axis := Vector3.RIGHT
+var near_verts := PackedVector3Array()  # corners nearby, for magnetic sticking while tilting
+var ghost_xf := Transform3D()  # what Space will actually place
+var ghost_ok := true
+var ghost_snapped := false
+var shown_tilt := 0.0
+var bad_mat: StandardMaterial3D
 
 var player: CharacterBody3D
 var sfx: AudioStreamPlayer
@@ -100,6 +109,7 @@ var flash_text := ""
 var flash_until := 0
 
 var demo := false
+var no_save := false
 var key_script: Array = []
 var shot_frame := 40
 var shot_path := ""
@@ -114,6 +124,7 @@ func _ready() -> void:
 		elif a.begins_with("--shot="):
 			shot_path = a.substr(7)
 		elif a.begins_with("--keys="):
+			no_save = true  # scripted test runs never touch the real save
 			# e.g. --keys=d:20,space:1  (key name : frames held), for testing keyboard play
 			for step in a.substr(7).split(","):
 				var kv := step.split(":")
@@ -351,6 +362,8 @@ func setup_ghost() -> void:
 	ghost_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	ghost_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	ghost_mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	bad_mat = ghost_mat.duplicate()
+	bad_mat.albedo_color = Color(1.0, 0.3, 0.25, 0.5)
 	erase_mat = ghost_mat.duplicate()
 	erase_mat.albedo_color = Color(1, 0.1, 0.1, 0.55)
 	erase_mat.no_depth_test = true
@@ -827,6 +840,11 @@ func update_hover() -> void:
 			hover_ground = false
 			candidates = edge_candidates(hover_tile, ei, pos, view_side, cur_shape)
 			cand_index = 0
+			tilt = 0.0
+			var bv: PackedVector3Array = hover_tile.verts
+			hinge_pivot = bv[ei]
+			hinge_axis = (bv[(ei + 1) % bv.size()] - bv[ei]).normalized()
+			gather_near_verts(hinge_pivot)
 	else:
 		if erase_mode or pos.y < -0.05 or Vector2(pos.x, pos.z).length() > BUILD_R:
 			return
@@ -836,18 +854,94 @@ func update_hover() -> void:
 			hover_ground = true
 			candidates = ground_candidates(pos, cur_shape)
 			cand_index = 0
+			tilt = 0.0
+			if not candidates.is_empty():
+				ground_hinge(candidates[0])
+				gather_near_verts(hinge_pivot)
 	if candidates.is_empty():
 		return
+	var base: Transform3D = candidates[cand_index % candidates.size()]
+	ghost_xf = base
+	ghost_ok = true
+	ghost_snapped = false
+	if absf(tilt) > 0.01:
+		# Swing the tile around its hinge to the chosen angle. It settles on
+		# 45-degree steps (e.g. straight up) when close, and corners that come
+		# close to other corners stick (magnets!).
+		var want := tilt
+		if absf(tilt - snappedf(tilt, 45.0)) < 4.0:
+			want = snappedf(tilt, 45.0)
+		var best := want
+		var best_err := corner_err(tilted(base, want))
+		for i in range(-10, 11):
+			var a := tilt + i * 0.5
+			var e := corner_err(tilted(base, a))
+			if e < best_err:
+				best_err = e
+				best = a
+		if best_err < 0.04:
+			ghost_snapped = true
+		else:
+			best = want
+		shown_tilt = best
+		ghost_xf = tilted(base, best)
+		ghost_ok = not overlaps(ghost_xf, cur_shape)
 	ghost.mesh = panel_mesh(cur_shape)
-	ghost.material_override = ghost_mat
-	ghost.transform = candidates[cand_index % candidates.size()]
+	ghost.material_override = ghost_mat if ghost_ok else bad_mat
+	ghost.transform = ghost_xf
 	ghost.visible = true
+
+
+func tilted(xf: Transform3D, deg: float) -> Transform3D:
+	var r := Basis(hinge_axis, deg_to_rad(deg))
+	return Transform3D(r, hinge_pivot - r * hinge_pivot) * xf
+
+
+func ground_hinge(xf: Transform3D) -> void:
+	# A tile on the ground tilts up around its back edge (the one on the grid line).
+	var v := shape_verts(cur_shape)
+	var n := v.size()
+	var bi := 0
+	for i in n:
+		if v[i].z + v[(i + 1) % n].z > v[bi].z + v[(bi + 1) % n].z:
+			bi = i
+	var a: Vector3 = xf * v[bi]
+	var b: Vector3 = xf * v[(bi + 1) % n]
+	hinge_pivot = a
+	hinge_axis = (b - a).normalized()
+	# Positive tilt should lift the tile off the ground, not push it into it.
+	if (tilted(xf, 10.0).origin.y) < xf.origin.y:
+		hinge_axis = -hinge_axis
+
+
+func gather_near_verts(around: Vector3) -> void:
+	near_verts = PackedVector3Array()
+	for o in tiles:
+		for p in o.verts:
+			if p.distance_to(around) < 3.0:
+				near_verts.append(p)
+
+
+func corner_err(xf: Transform3D) -> float:
+	# How close the tile's free corners (not on the hinge) come to existing corners.
+	var best := INF
+	for p in shape_verts(cur_shape):
+		var wp := xf * p
+		var off := wp - hinge_pivot
+		if (off - hinge_axis * off.dot(hinge_axis)).length() < 0.05:
+			continue  # on the hinge itself
+		for q in near_verts:
+			best = minf(best, wp.distance_squared_to(q))
+	return sqrt(best)
 
 
 func place_ghost() -> void:
 	if not ghost.visible or candidates.is_empty():
 		return
-	var xf: Transform3D = candidates[cand_index % candidates.size()]
+	if not ghost_ok:
+		flash("That would bump into another tile - tilt it some more")
+		return
+	var xf := ghost_xf
 	var t := spawn_tile(cur_shape, cur_color, xf)
 	undo_stack.append({"op": "add", "id": t.id})
 	play_sfx(click_snd)
@@ -880,6 +974,7 @@ func flip() -> void:
 		hover_key = ""
 	elif candidates.size() > 1:
 		cand_index += 1
+		tilt = 0.0
 	elif ghost.visible:
 		flash("This piece only fits one way here")
 
@@ -1197,6 +1292,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 				orbiting = false
 				if not right_moved and not play_mode:
 					remove_hovered()
+		elif mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] and mb.pressed and mb.shift_pressed:
+			tilt += 5.0 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else -5.0
+			tilt = clampf(tilt, 0.0, 180.0) if hover_ground else wrapf(tilt, -180.0, 180.0)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
 			cam_dist = clampf(cam_dist * 0.9, 1.5, 40.0)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
@@ -1225,7 +1323,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 			if menu.visible:
 				menu_key(menu, key)
 				return
-		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE]:
+		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE, KEY_F, KEY_G]:
 			if not kb_aim:
 				aim_pos = get_viewport().get_mouse_position()  # pick up where the mouse was
 			kb_aim = true
@@ -1300,6 +1398,18 @@ func _process(delta: float) -> void:
 			cam_target.z = flat.y
 	elif play_mode:
 		cam_target = cam_target.lerp(player.global_position + Vector3(0, 0.35, 0), 1.0 - exp(-10.0 * delta))
+	if keys_live and not play_mode and place_item == "":
+		var swing := 0.0
+		if Input.is_key_pressed(KEY_F):
+			swing += 1.0
+		if Input.is_key_pressed(KEY_G):
+			swing -= 1.0
+		if swing != 0.0:
+			tilt += swing * 45.0 * delta
+			if hover_ground:
+				tilt = clampf(tilt, 0.0, 180.0)
+			else:
+				tilt = wrapf(tilt, -180.0, 180.0)
 	if keys_live:
 		if Input.is_key_pressed(KEY_UP):
 			cam_pitch = clampf(cam_pitch + 1.2 * delta, 0.05, 1.45)
@@ -1330,10 +1440,14 @@ func _process(delta: float) -> void:
 		status_label.text = flash_text
 	elif place_item != "":
 		status_label.text = "Move to pick a spot  -  R to turn  -  Space to put it down  -  Esc to cancel"
+	elif ghost.visible and absf(tilt) > 0.01:
+		status_label.text = ("Click! Corners stuck together" if ghost_snapped else "Tilted %+d°  -  F / G to keep tilting" % roundi(shown_tilt)) if ghost_ok else "Too close to another tile - tilt some more"
 	elif ghost.visible and not hover_ground and candidates.size() > 1:
-		status_label.text = "Way %d of %d  -  press R to flip" % [cand_index % candidates.size() + 1, candidates.size()]
+		status_label.text = "Way %d of %d  -  R to flip  -  F / G to tilt any angle" % [cand_index % candidates.size() + 1, candidates.size()]
 	elif ghost.visible and hover_ground:
-		status_label.text = "Press R to turn it"
+		status_label.text = "R to turn it  -  F / G to stand it up"
+	elif ghost.visible:
+		status_label.text = "F / G to tilt any angle"
 	else:
 		status_label.text = ""
 	crosshair.visible = kb_aim and not play_mode and not menu_open() and not busy
@@ -1566,7 +1680,7 @@ func refresh_help() -> void:
 		rows = [
 			[["W", "A", "S", "D"], "Move the aim"], [["Left", "Right"], "Spin the camera"],
 			[["Up", "Down"], "Tilt the camera"], [["Q", "E"], "Zoom out / in"],
-			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"],
+			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"], [["F", "G"], "Tilt the tile any angle"],
 			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],
 			[["I"], "Add things (like our couch!)"], [["K"], "SMASH it!"],
@@ -1726,7 +1840,7 @@ func load_settings() -> Dictionary:
 
 
 func save_settings(d: Dictionary) -> void:
-	if demo:
+	if demo or no_save:
 		return
 	var f := FileAccess.open(SETTINGS_PATH, FileAccess.WRITE)
 	if f:
@@ -1783,7 +1897,7 @@ func play_sfx(snd: AudioStream) -> void:
 # ---------------------------------------------------------------- save / load
 
 func save_world() -> void:
-	if demo:
+	if demo or no_save:
 		return
 	var arr: Array = []
 	for t in tiles:
@@ -1841,6 +1955,45 @@ func demo_attach(base: Dictionary, which: String, shape: String, color: int, pic
 	return spawn_tile(shape, color, cands[pick % cands.size()])
 
 
+func build_photo_replica(at: Vector3) -> void:
+	# Geoff's photo: a square stood up on the ground, a second square hinged off
+	# its side at an open angle, and triangles standing on top of both.
+	var keep := cur_shape
+	cur_shape = "square"
+	var g: Transform3D = ground_candidates(at, "square")[0]
+	ground_hinge(g)
+	var a := spawn_tile("square", 4, tilted(g, 90.0))
+	# Side edge = the vertical one furthest along +X.
+	var side := -1
+	for i in 4:
+		var d: Vector3 = a.verts[(i + 1) % 4] - a.verts[i]
+		if absf(d.normalized().y) > 0.9 and (side < 0 or a.verts[i].x > a.verts[side].x):
+			side = i
+	var mid: Vector3 = (a.verts[side] + a.verts[(side + 1) % 4]) / 2
+	var na: Vector3 = a.xform.basis.y
+	var cands := edge_candidates(a, side, mid, na, "square")
+	var flat_on: Transform3D = cands[0]
+	for c in cands:  # the "straight on" option, in the same plane as tile a
+		if absf((c as Transform3D).basis.y.normalized().dot(na)) > 0.99:
+			flat_on = c
+	hinge_pivot = a.verts[side]
+	hinge_axis = (a.verts[(side + 1) % 4] - a.verts[side]).normalized()
+	var b := spawn_tile("square", 4, tilted(flat_on, 60.0))
+	cur_shape = "triangle"
+	for t in [a, b]:
+		var top := 0
+		for i in 4:
+			if t.verts[i].y + t.verts[(i + 1) % 4].y > t.verts[top].y + t.verts[(top + 1) % 4].y:
+				top = i
+		var m: Vector3 = (t.verts[top] + t.verts[(top + 1) % 4]) / 2
+		var tc := edge_candidates(t, top, m, t.xform.basis.y, "triangle")
+		for c in tc:  # stand it up in the same plane as the square
+			if absf((c as Transform3D).basis.y.normalized().dot(t.xform.basis.y)) > 0.99:
+				spawn_tile("triangle", 2, c)
+				break
+	cur_shape = keep
+
+
 func build_demo() -> void:
 	# A little house: floor, four walls (corners click together), pyramid roof.
 	var floor_t := spawn_tile("square", 4, ground_candidates(Vector3(0.3, 0, 0.3), "square")[0])
@@ -1867,6 +2020,7 @@ func build_demo() -> void:
 	print("right-triangle options on a long edge: ", c1.size())
 	spawn_tile("right", 1, c1[0])
 	spawn_item("couch", Transform3D(Basis(Vector3.UP, PI / 4), Vector3(-6.0, 0, 4.0)))
+	build_photo_replica(Vector3(4.6, 0, -4.4))
 	print("demo tiles: ", tiles.size())
 	cam_target = Vector3(0, 0.8, 0.5)
 	cam_dist = 9.0
