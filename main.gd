@@ -80,7 +80,13 @@ var item_ghost_ok := false
 var hover_item = null
 var lit_item = null
 var items_menu: Control
-var items_sel := 0
+var smash_menu: Control
+var smash_button: Button
+var destroyer: Node3D  # destroy.gd: the Smash! shows
+var busy := false  # a smash show is playing; building/walking input is paused
+var shake := 0.0  # camera shake amount, decays by itself
+var crash_snd: AudioStreamWAV
+var thud_snd: AudioStreamWAV
 var items_button: Button
 var kb_aim := true  # aim with the keyboard crosshair instead of the mouse
 var aim_pos := Vector2(-1, -1)  # crosshair position on screen (WASD moves it)
@@ -120,6 +126,10 @@ func _ready() -> void:
 	setup_ghost()
 	setup_audio()
 	setup_player()
+	destroyer = Node3D.new()
+	destroyer.set_script(preload("res://destroy.gd"))
+	destroyer.main = self
+	add_child(destroyer)
 	setup_ui()
 	if demo:
 		build_demo()
@@ -135,6 +145,8 @@ func _ready() -> void:
 			player.set_character(a.substr(7))
 		elif a == "--picker":
 			show_picker(true)
+		elif a.begins_with("--smash="):
+			destroyer.start.call_deferred(a.substr(8))
 		elif a == "--walk":
 			player.auto_walk = true
 	if "--play" in OS.get_cmdline_user_args():
@@ -516,7 +528,7 @@ func spawn_tile(shape: String, color: int, xf: Transform3D) -> Dictionary:
 	create_tween().tween_property(visual, "scale", Vector3.ONE, 0.18).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	return t
 
-func remove_tile(t: Dictionary, record := true) -> void:
+func remove_tile(t: Dictionary, record := true, quiet := false) -> void:
 	for i in tiles.size():
 		if tiles[i].id == t.id:
 			tiles.remove_at(i)
@@ -524,8 +536,10 @@ func remove_tile(t: Dictionary, record := true) -> void:
 	(t.node as Node).queue_free()
 	if record:
 		undo_stack.append({"op": "remove", "shape": t.shape, "color": t.color, "xform": t.xform})
-	play_sfx(pop_snd)
 	hover_key = ""
+	if quiet:
+		return
+	play_sfx(pop_snd)
 	save_world()
 
 
@@ -774,6 +788,8 @@ func update_hover() -> void:
 	ghost.visible = false
 	hover_tile = null
 	hover_item = null
+	if busy:
+		return
 	if item_ghost:
 		item_ghost.visible = false
 	update_item_hover()
@@ -882,6 +898,14 @@ func undo() -> void:
 			if t.id == u.id:
 				remove_tile(t, false)
 				break
+	elif u.op == "destroy":
+		destroyer.clear_debris()
+		for d in u.tiles:
+			spawn_tile(d.shape, d.color, d.xform)
+		play_sfx(click_snd)
+		flash("Rebuilt!")
+		hover_key = ""
+		save_world()
 	elif u.op == "add_item":
 		for it in items:
 			if it.id == u.id:
@@ -1047,25 +1071,29 @@ func place_item_here() -> void:
 
 
 func menu_open() -> bool:
-	return picker.visible or items_menu.visible
+	return picker.visible or items_menu.visible or smash_menu.visible
 
 
-func build_items_menu(layer: CanvasLayer) -> void:
-	# "Add something to your world" - one big card per item.
-	items_menu = ColorRect.new()
-	(items_menu as ColorRect).color = Color(0.05, 0.08, 0.15, 0.55)
-	items_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	items_menu.mouse_filter = Control.MOUSE_FILTER_STOP
-	items_menu.visible = false
-	layer.add_child(items_menu)
+func build_card_menu(layer: CanvasLayer, title_text: String, entries: Array, pick: Callable) -> Control:
+	# Full-screen chooser: one big picture card per entry {id, name, icon}.
+	# Number keys pick directly; arrows + Enter also work; Esc closes.
+	var menu := ColorRect.new()
+	menu.color = Color(0.05, 0.08, 0.15, 0.55)
+	menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	menu.mouse_filter = Control.MOUSE_FILTER_STOP
+	menu.visible = false
+	menu.set_meta("entries", entries)
+	menu.set_meta("pick", pick)
+	menu.set_meta("sel", 0)
+	layer.add_child(menu)
 	var centre := CenterContainer.new()
 	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	items_menu.add_child(centre)
+	menu.add_child(centre)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 22)
 	centre.add_child(col)
 	var title := Label.new()
-	title.text = "Add something to your world"
+	title.text = title_text
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 44)
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
@@ -1075,22 +1103,22 @@ func build_items_menu(layer: CanvasLayer) -> void:
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 22)
 	col.add_child(row)
-	var keys := ITEMS.keys()
-	for i in keys.size():
-		var info: Dictionary = ITEMS[keys[i]]
+	for i in entries.size():
+		var e: Dictionary = entries[i]
 		var b := Button.new()
 		b.focus_mode = Control.FOCUS_NONE
 		b.custom_minimum_size = Vector2(340, 360)
-		b.icon = load(info.icon)
+		if ResourceLoader.exists(e.icon):
+			b.icon = load(e.icon)
 		b.expand_icon = true
 		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
-		b.text = "%d  %s" % [i + 1, info.name]
+		b.text = "%d  %s" % [i + 1, e.name]
 		b.add_theme_font_size_override("font_size", 24)
 		b.add_theme_color_override("font_color", Color("1d2a40"))
 		b.add_theme_color_override("font_hover_color", Color("1d2a40"))
-		b.set_meta("item", keys[i])
-		b.pressed.connect(choose_item.bind(keys[i]))
+		b.set_meta("index", i)
+		b.pressed.connect(func(): pick_from_menu(menu, i))
 		row.add_child(b)
 	var how := Label.new()
 	how.text = "Press the number  -  or use the arrow keys and Enter"
@@ -1099,42 +1127,52 @@ func build_items_menu(layer: CanvasLayer) -> void:
 	how.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
 	how.add_theme_constant_override("outline_size", 6)
 	col.add_child(how)
-	var close := add_button(col, "Esc  Close", Vector2(170, 64), func(): show_items(false))
+	var close := add_button(col, "Esc  Close", Vector2(170, 64), func(): show_menu(menu, false))
 	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	style_button(close, Color("3a4a63"), false)
+	return menu
 
 
-func show_items(on: bool) -> void:
-	items_menu.visible = on
+func show_menu(menu: Control, on: bool) -> void:
+	menu.visible = on
 	if on:
-		for b in items_menu.find_children("*", "Button", true, false):
-			if (b as Node).has_meta("item"):
-				var sel: bool = ITEMS.keys().find(b.get_meta("item")) == items_sel
+		for b in menu.find_children("*", "Button", true, false):
+			if (b as Node).has_meta("index"):
+				var sel: bool = b.get_meta("index") == menu.get_meta("sel")
 				style_button(b, Color("ffffff") if sel else Color("c9d3e3"), sel)
 				(b as Button).get_theme_stylebox("normal").border_color = Color("ffb400") if sel else Color("9aa7bd")
 				(b as Button).get_theme_stylebox("normal").set_border_width_all(8 if sel else 2)
 
 
-func items_key(key: int) -> void:
-	var keys := ITEMS.keys()
-	if key >= KEY_1 and key <= KEY_9 and key - KEY_1 < keys.size():
-		choose_item(keys[key - KEY_1])
+func menu_key(menu: Control, key: int) -> void:
+	var n: int = (menu.get_meta("entries") as Array).size()
+	if key >= KEY_1 and key <= KEY_9 and key - KEY_1 < n:
+		pick_from_menu(menu, key - KEY_1)
 		return
 	match key:
 		KEY_LEFT, KEY_A:
-			items_sel = (items_sel + keys.size() - 1) % keys.size()
-			show_items(true)
+			menu.set_meta("sel", (int(menu.get_meta("sel")) + n - 1) % n)
+			show_menu(menu, true)
 		KEY_RIGHT, KEY_D:
-			items_sel = (items_sel + 1) % keys.size()
-			show_items(true)
+			menu.set_meta("sel", (int(menu.get_meta("sel")) + 1) % n)
+			show_menu(menu, true)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
-			choose_item(keys[items_sel])
-		KEY_ESCAPE, KEY_I:
-			show_items(false)
+			pick_from_menu(menu, int(menu.get_meta("sel")))
+		KEY_ESCAPE, KEY_I, KEY_K:
+			show_menu(menu, false)
+
+
+func pick_from_menu(menu: Control, i: int) -> void:
+	var e: Dictionary = (menu.get_meta("entries") as Array)[i]
+	show_menu(menu, false)
+	(menu.get_meta("pick") as Callable).call(e.id)
+
+
+func show_items(on: bool) -> void:
+	show_menu(items_menu, on)
 
 
 func choose_item(item: String) -> void:
-	show_items(false)
 	set_place_item(item)
 	play_sfx(click_snd)
 
@@ -1142,6 +1180,8 @@ func choose_item(item: String) -> void:
 # ---------------------------------------------------------------- input + camera
 
 func _unhandled_input(ev: InputEvent) -> void:
+	if busy:
+		return
 	if ev is InputEventMouseButton:
 		var mb := ev as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not play_mode:
@@ -1181,9 +1221,10 @@ func _unhandled_input(ev: InputEvent) -> void:
 		if picker.visible:
 			picker_key(key)
 			return
-		if items_menu.visible:
-			items_key(key)
-			return
+		for menu in [items_menu, smash_menu]:
+			if menu.visible:
+				menu_key(menu, key)
+				return
 		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE]:
 			if not kb_aim:
 				aim_pos = get_viewport().get_mouse_position()  # pick up where the mouse was
@@ -1212,6 +1253,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 			KEY_I:
 				if not play_mode:
 					show_items(true)
+			KEY_K:
+				if not play_mode:
+					show_menu(smash_menu, true)
 			KEY_ESCAPE:
 				if place_item != "":
 					set_place_item("")
@@ -1225,7 +1269,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
-	var keys_live := not menu_open()
+	var keys_live := not menu_open() and not busy
 	if not play_mode and keys_live:
 		# WASD moves the crosshair around the screen like a mouse pointer; pushing it
 		# against the edge of the screen scrolls the view that way.
@@ -1272,6 +1316,9 @@ func _process(delta: float) -> void:
 
 	var off := Vector3(cos(cam_pitch) * sin(cam_yaw), sin(cam_pitch), cos(cam_pitch) * cos(cam_yaw)) * cam_dist
 	cam.global_position = cam_target + off
+	if shake > 0.0:
+		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * shake * 0.35
+		shake = maxf(shake - delta * 1.8, 0.0)
 	cam.look_at(cam_target, Vector3.UP)
 
 	update_hover()
@@ -1289,7 +1336,10 @@ func _process(delta: float) -> void:
 		status_label.text = "Press R to turn it"
 	else:
 		status_label.text = ""
-	crosshair.visible = kb_aim and not play_mode and not menu_open()
+	crosshair.visible = kb_aim and not play_mode and not menu_open() and not busy
+	# Clear the screen for the Smash! show.
+	(play_button.get_parent().get_parent() as Control).visible = not busy
+	help_panel.visible = help_visible and not busy
 	crosshair.position = aim_pos
 	crosshair.move_to_front()  # never hidden behind the controls card
 
@@ -1394,6 +1444,7 @@ func setup_ui() -> void:
 		color_buttons.append(b)
 	row.add_child(VSeparator.new())
 	items_button = add_button(row, "I\nItems", Vector2(76, 72), func(): show_items(not items_menu.visible))
+	smash_button = add_button(row, "K\nSmash!", Vector2(84, 72), func(): show_menu(smash_menu, not smash_menu.visible))
 	flip_button = add_button(row, "R\nFlip", Vector2(76, 72), flip)
 	erase_button = add_button(row, "X\nEraser", Vector2(84, 72), func(): set_erase(not erase_mode))
 	undo_button = add_button(row, "Z\nUndo", Vector2(76, 72), undo)
@@ -1401,7 +1452,14 @@ func setup_ui() -> void:
 	char_button.expand_icon = true
 	play_button = add_button(row, "Tab\nPlay!", Vector2(96, 72), func(): set_play(not play_mode))
 	build_picker(layer)
-	build_items_menu(layer)
+	var item_entries: Array = []
+	for k in ITEMS:
+		item_entries.append({"id": k, "name": ITEMS[k].name, "icon": ITEMS[k].icon})
+	items_menu = build_card_menu(layer, "Add something to your world", item_entries, choose_item)
+	smash_menu = build_card_menu(layer, "How should we SMASH it?", [
+		{"id": "giant", "name": "Giant Levi", "icon": "res://assets/giant/giant.png"},
+		{"id": "ball", "name": "Wrecking Ball", "icon": "res://assets/crane/crane.png"},
+	], func(kind): destroyer.start(kind))
 	setup_help(layer)
 
 	# Aiming crosshair for keyboard building.
@@ -1448,8 +1506,9 @@ func refresh_ui() -> void:
 	style_button(erase_button, Color("b53a3a") if erase_mode else Color("3a4a63"), erase_mode)
 	style_button(undo_button, Color("3a4a63"), false)
 	style_button(flip_button, Color("3a4a63"), false)
+	style_button(smash_button, Color("c0392b"), false)
 	style_button(items_button, Color("8a5a2b") if place_item != "" else Color("6b4a2b"), place_item != "")
-	for b in shape_buttons.values() + color_buttons + [items_button, flip_button, erase_button, undo_button]:
+	for b in shape_buttons.values() + color_buttons + [items_button, smash_button, flip_button, erase_button, undo_button]:
 		(b as Button).visible = not play_mode
 	for sep in (char_button.get_parent() as Node).find_children("*", "VSeparator", false, false):
 		(sep as Control).visible = not play_mode
@@ -1510,7 +1569,7 @@ func refresh_help() -> void:
 			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"],
 			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],
-			[["I"], "Add things (like our couch!)"],
+			[["I"], "Add things (like our couch!)"], [["K"], "SMASH it!"],
 			[["Tab"], "Go exploring!"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
 		]
 	for r in rows:
@@ -1681,11 +1740,13 @@ func setup_audio() -> void:
 	add_child(sfx)
 	click_snd = make_sound("click")
 	pop_snd = make_sound("pop")
+	crash_snd = make_sound("crash", 1.4)
+	thud_snd = make_sound("thud", 0.9)
 
 
-func make_sound(kind: String) -> AudioStreamWAV:
+func make_sound(kind: String, dur := 0.14) -> AudioStreamWAV:
 	var rate := 22050
-	var n := int(rate * 0.14)
+	var n := int(rate * dur)
 	var data := PackedByteArray()
 	data.resize(n * 2)
 	for i in n:
@@ -1697,6 +1758,12 @@ func make_sound(kind: String) -> AudioStreamWAV:
 			if t > 0.035:
 				var t2 := t - 0.035
 				s += sin(TAU * 2300.0 * t2) * exp(-t2 * 70.0) * 0.8 + (randf() * 2.0 - 1.0) * exp(-t2 * 250.0) * 0.4
+		elif kind == "crash":
+			# Big plastic clatter: a thump plus lots of little rattles.
+			s = sin(TAU * 55.0 * t) * exp(-t * 5.0) * 1.2 + (randf() * 2.0 - 1.0) * exp(-t * 3.5) * 0.7
+			s += sin(TAU * (1400.0 + 900.0 * sin(t * 37.0)) * t) * exp(-t * 6.0) * 0.25 * (1.0 if fmod(t * 23.0, 1.0) < 0.3 else 0.0)
+		elif kind == "thud":
+			s = sin(TAU * (48.0 - 10.0 * t) * t) * exp(-t * 6.0) * 1.6 + (randf() * 2.0 - 1.0) * exp(-t * 25.0) * 0.3
 		else:
 			s = sin(TAU * (520.0 - 1500.0 * t) * t) * exp(-t * 22.0)
 		data.encode_s16(i * 2, int(clampf(s * 0.45, -1.0, 1.0) * 32767.0))
