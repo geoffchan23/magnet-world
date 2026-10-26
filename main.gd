@@ -11,8 +11,7 @@ const COLORS := [
 	Color("ff4d4d"), Color("ff9a2e"), Color("ffd93b"), Color("41d36b"),
 	Color("2ea8ff"), Color("8a5cff"), Color("ff6fc0"),
 ]
-const SHAPES := ["square", "triangle", "tall", "big"]
-const SHAPE_LABELS := {"square": "Square", "triangle": "Triangle", "tall": "Tall\nTriangle", "big": "Big\nSquare"}
+const SHAPES := ["square", "triangle", "right", "tall", "big"]
 const SAVE_PATH := "user://world.json"
 const SETTINGS_PATH := "user://settings.json"
 const CHARACTERS := ["kid", "fox", "robot", "dino"]
@@ -32,7 +31,7 @@ var play_mode := false
 var ground_rot := 0
 
 var cam: Camera3D
-var cam_target := Vector3(0.5, 0.4, 0.5)
+var cam_target := Vector3(0.5, 0.0, 0.5)
 var cam_yaw := 0.7
 var cam_pitch := 0.6
 var cam_dist := 7.0
@@ -67,7 +66,19 @@ var picker: Control
 var shape_buttons := {}
 var color_buttons: Array = []
 
+var kb_aim := true  # aim with the screen-centre crosshair (keyboard) instead of the mouse
+var crosshair: Control
+var help_panel: PanelContainer
+var help_grid: GridContainer
+var help_visible := true
+var flip_button: Button
+var picker_sel := 0
+var flash_text := ""
+var flash_until := 0
+
 var demo := false
+var key_script: Array = []
+var shot_frame := 40
 var shot_path := ""
 var frame_count := 0
 var cam_override := PackedFloat64Array()
@@ -79,6 +90,13 @@ func _ready() -> void:
 			demo = true
 		elif a.begins_with("--shot="):
 			shot_path = a.substr(7)
+		elif a.begins_with("--keys="):
+			# e.g. --keys=d:20,space:1  (key name : frames held), for testing keyboard play
+			for step in a.substr(7).split(","):
+				var kv := step.split(":")
+				key_script.append([OS.find_keycode_from_string(kv[0]), int(kv[1]) if kv.size() > 1 else 1])
+		elif a.begins_with("--shotframe="):
+			shot_frame = int(a.substr(12))
 		elif a.begins_with("--cam="):
 			cam_override = a.substr(6).split_floats(",")
 	setup_world()
@@ -105,6 +123,8 @@ func _ready() -> void:
 	if "--play" in OS.get_cmdline_user_args():
 		set_play(true)
 	refresh_ui()
+	if not key_script.is_empty():
+		run_key_script.call_deferred()
 
 
 # ---------------------------------------------------------------- world setup
@@ -344,6 +364,9 @@ static func shape_verts(shape: String) -> PackedVector3Array:
 	match shape:
 		"triangle":
 			return PackedVector3Array([Vector3(-0.5, 0, H / 3), Vector3(0.5, 0, H / 3), Vector3(0, 0, -2 * H / 3)])
+		"right":
+			# Half a square (Picasso Tiles style): two unit legs and a long sloped side.
+			return PackedVector3Array([Vector3(-1.0 / 3, 0, 1.0 / 3), Vector3(2.0 / 3, 0, 1.0 / 3), Vector3(-1.0 / 3, 0, -2.0 / 3)])
 		"tall":
 			var h := 1.4
 			return PackedVector3Array([Vector3(-0.5, 0, h / 3), Vector3(0.5, 0, h / 3), Vector3(0, 0, -2 * h / 3)])
@@ -506,7 +529,21 @@ func overlaps(xf: Transform3D, shape: String) -> bool:
 
 # ---------------------------------------------------------------- magnet snapping
 
-func attach_frame(t: Dictionary, ei: int, hit: Vector3, shape: String) -> Dictionary:
+func matching_edges(shape: String, lb: float) -> Array:
+	# Edges of `shape` whose length best matches lb (several when sides are equal).
+	var nv := shape_verts(shape)
+	var m := nv.size()
+	var best := INF
+	for j in m:
+		best = minf(best, absf(nv[j].distance_to(nv[(j + 1) % m]) - lb))
+	var ks: Array = []
+	for j in m:
+		if absf(nv[j].distance_to(nv[(j + 1) % m]) - lb) < best + 0.01:
+			ks.append(j)
+	return ks
+
+
+func attach_frame(t: Dictionary, ei: int, hit: Vector3, shape: String, k := -1) -> Dictionary:
 	# Lay the new tile flat against edge `ei` of tile `t`, extending outward in
 	# the same plane (fold angle 0). Folding then rotates it about that edge.
 	var bv: PackedVector3Array = t.verts
@@ -517,13 +554,8 @@ func attach_frame(t: Dictionary, ei: int, hit: Vector3, shape: String) -> Dictio
 	var u := (p1 - p0) / lb
 	var nv := shape_verts(shape)
 	var m := nv.size()
-	var k := 0
-	var best := INF
-	for j in m:
-		var d := absf(nv[j].distance_to(nv[(j + 1) % m]) - lb)
-		if d < best - 0.001:
-			best = d
-			k = j
+	if k < 0:
+		k = matching_edges(shape, lb)[0]
 	var a := nv[k]
 	var b := nv[(k + 1) % m]
 	var ln := a.distance_to(b)
@@ -575,7 +607,37 @@ func closing_err(f: Dictionary, deg: float, side: Vector3, free_local: Array, ne
 
 
 func edge_candidates(t: Dictionary, ei: int, hit: Vector3, view_side: Vector3, shape: String) -> Array:
-	var f := attach_frame(t, ei, hit, shape)
+	var bv: PackedVector3Array = t.verts
+	var lb := bv[ei].distance_to(bv[(ei + 1) % bv.size()])
+	var closings: Array = []
+	var per_edge: Array = []
+	for k in matching_edges(shape, lb):
+		var parts := hinge_candidates(t, ei, hit, view_side, shape, k)
+		closings.append_array(parts[0])
+		per_edge.append(parts[1])
+	# Interleave the presets so R flips to the mirror image first (right triangle).
+	var others: Array = []
+	for i in per_edge[0].size():
+		for opts in per_edge:
+			if i < opts.size():
+				others.append(opts[i])
+	var out: Array = []
+	for xf in closings + others:
+		if out.size() >= 8:
+			break
+		var dup := false
+		for e in out:
+			if (e.origin as Vector3).distance_to(xf.origin) < 0.03:
+				dup = true
+				break
+		if not dup and not overlaps(xf, shape):
+			out.append(xf)
+	return out
+
+
+func hinge_candidates(t: Dictionary, ei: int, hit: Vector3, view_side: Vector3, shape: String, k: int) -> Array:
+	# [magnetic closings, preset folds] for one way of putting the new tile's edge k on the hinge.
+	var f := attach_frame(t, ei, hit, shape, k)
 	var nv := shape_verts(shape)
 	var is_tri := nv.size() == 3
 	var free_local: Array = []
@@ -623,7 +685,7 @@ func edge_candidates(t: Dictionary, ei: int, hit: Vector3, view_side: Vector3, s
 		opts.append([0.0, view_side])
 	opts.append_array([[90.0, view_side], [0.0, view_side], [-90.0, view_side]])
 	if is_tri:
-		opts.append_array([[lean_floor, view_side], [lean_floor, -view_side], [lean_wall, side_in], [lean_wall, -side_in]])
+		opts.append_array([[lean_floor, view_side], [lean_wall, side_in]])
 
 	# Magnetic closings: angles where a free corner lands on an existing corner.
 	var angles: Array = []
@@ -637,21 +699,13 @@ func edge_candidates(t: Dictionary, ei: int, hit: Vector3, view_side: Vector3, s
 	if not cluster.is_empty():
 		angles.append(refine(f, cluster, view_side, free_local, near))
 
-	var xfs: Array = []
+	var closing_xfs: Array = []
 	for a in angles:
-		xfs.append(folded(f, a, view_side))
+		closing_xfs.append(folded(f, a, view_side))
+	var opt_xfs: Array = []
 	for o in opts:
-		xfs.append(folded(f, o[0], o[1]))
-	var out: Array = []
-	for xf in xfs:
-		var dup := false
-		for e in out:
-			if (e.origin as Vector3).distance_to(xf.origin) < 0.03:
-				dup = true
-				break
-		if not dup and not overlaps(xf, shape):
-			out.append(xf)
-	return out
+		opt_xfs.append(folded(f, o[0], o[1]))
+	return [closing_xfs, opt_xfs]
 
 
 func refine(f: Dictionary, cluster: Array, side: Vector3, free_local: Array, near: PackedVector3Array) -> float:
@@ -675,8 +729,12 @@ func ground_candidates(hit: Vector3, shape: String) -> Array:
 		c = Vector3(floorf(hit.x) + 0.5, 0, floorf(hit.z) + 0.5)
 	var rot := Basis(Vector3.UP, ground_rot * PI / 2)
 	var v := shape_verts(shape)
-	var off := 0.5 - v[0].z if v.size() == 3 else 0.0  # triangle base sits on a grid line
-	var xf := Transform3D(rot, c + rot * Vector3(0, 0, off) + Vector3(0, T / 2 + 0.002, 0))
+	var off := Vector3.ZERO
+	if v.size() == 3:  # triangle base sits on a grid line, centred across the cell
+		var minx := minf(v[0].x, minf(v[1].x, v[2].x))
+		var maxx := maxf(v[0].x, maxf(v[1].x, v[2].x))
+		off = Vector3(-(minx + maxx) / 2, 0, 0.5 - v[0].z)
+	var xf := Transform3D(rot, c + rot * off + Vector3(0, T / 2 + 0.002, 0))
 	return [] if overlaps(xf, shape) else [xf]
 
 
@@ -698,9 +756,11 @@ func nearest_edge(t: Dictionary, p: Vector3) -> int:
 func update_hover() -> void:
 	ghost.visible = false
 	hover_tile = null
-	if play_mode or get_viewport().gui_get_hovered_control() != null:
+	if play_mode or picker.visible:
 		return
-	var mp := get_viewport().get_mouse_position()
+	if not kb_aim and get_viewport().gui_get_hovered_control() != null:
+		return
+	var mp := get_viewport().get_visible_rect().size / 2.0 if kb_aim else get_viewport().get_mouse_position()
 	var from := cam.project_ray_origin(mp)
 	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 1 | 2)
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -755,12 +815,28 @@ func place_ghost() -> void:
 	save_world()
 
 
+func action() -> void:
+	# Space / left-click: place the tile (or remove one in eraser mode).
+	if erase_mode:
+		if hover_tile != null:
+			remove_tile(hover_tile)
+	else:
+		place_ghost()
+
+
 func flip() -> void:
 	if hover_ground:
 		ground_rot = (ground_rot + 1) % 4
 		hover_key = ""
-	else:
+	elif candidates.size() > 1:
 		cand_index += 1
+	elif ghost.visible:
+		flash("This piece only fits one way here")
+
+
+func flash(text: String) -> void:
+	flash_text = text
+	flash_until = Time.get_ticks_msec() + 1800
 
 
 func undo() -> void:
@@ -785,11 +861,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 	if ev is InputEventMouseButton:
 		var mb := ev as InputEventMouseButton
 		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not play_mode:
-			if erase_mode:
-				if hover_tile != null:
-					remove_tile(hover_tile)
-			else:
-				place_ghost()
+			kb_aim = false
+			update_hover()
+			action()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
 			if mb.pressed:
 				orbiting = true
@@ -805,6 +879,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 			cam_dist = clampf(cam_dist * 1.1, 1.5, 40.0)
 	elif ev is InputEventMouseMotion:
 		var mm := ev as InputEventMouseMotion
+		if not orbiting and mm.relative.length() > 2.0:
+			kb_aim = false
 		if orbiting:
 			cam_yaw -= mm.relative.x * 0.008
 			cam_pitch = clampf(cam_pitch + mm.relative.y * 0.006, 0.05, 1.45)
@@ -817,45 +893,80 @@ func _unhandled_input(ev: InputEvent) -> void:
 	elif ev is InputEventMagnifyGesture:
 		cam_dist = clampf(cam_dist / (ev as InputEventMagnifyGesture).factor, 1.5, 40.0)
 	elif ev is InputEventKey and ev.pressed and not ev.echo:
-		match (ev as InputEventKey).keycode:
-			KEY_1, KEY_2, KEY_3, KEY_4:
-				set_shape(SHAPES[(ev as InputEventKey).keycode - KEY_1])
+		var key := (ev as InputEventKey).keycode
+		if picker.visible:
+			picker_key(key)
+			return
+		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE]:
+			kb_aim = true
+		match key:
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
+				if not play_mode:
+					set_shape(SHAPES[key - KEY_1])
 			KEY_C:
-				set_color((cur_color + 1) % COLORS.size())
+				if not play_mode:
+					set_color((cur_color + 1) % COLORS.size())
 			KEY_X:
-				set_erase(not erase_mode)
+				if not play_mode:
+					set_erase(not erase_mode)
 			KEY_Z:
-				undo()
+				if not play_mode:
+					undo()
 			KEY_R:
 				flip()
+			KEY_SPACE:
+				if not play_mode:
+					action()
+			KEY_BACKSPACE, KEY_DELETE:
+				if not play_mode and hover_tile != null:
+					remove_tile(hover_tile)
 			KEY_TAB:
 				set_play(not play_mode)
 			KEY_P:
-				show_picker(not picker.visible)
-			KEY_ESCAPE:
-				show_picker(false)
+				show_picker(true)
+			KEY_H:
+				help_visible = not help_visible
+				refresh_ui()
 
 
 func _process(delta: float) -> void:
-	if not play_mode:
+	var keys_live := not picker.visible
+	if not play_mode and keys_live:
+		# WASD slides the crosshair around the island; up/down arrows aim higher/lower.
 		var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
 		var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
 		var move := Vector3.ZERO
-		if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+		if Input.is_key_pressed(KEY_W):
 			move += fwd
-		if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+		if Input.is_key_pressed(KEY_S):
 			move -= fwd
-		if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+		if Input.is_key_pressed(KEY_A):
 			move -= right
-		if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT):
+		if Input.is_key_pressed(KEY_D):
 			move += right
-		cam_target += move * cam_dist * 0.6 * delta
-	else:
+		cam_target += move * clampf(cam_dist * 0.45, 1.5, 6.0) * delta
+		var flat := Vector2(cam_target.x, cam_target.z).limit_length(12.0)
+		cam_target.x = flat.x
+		cam_target.z = flat.y
+		if Input.is_key_pressed(KEY_UP):
+			cam_target.y = minf(cam_target.y + 1.5 * delta, 8.0)
+		if Input.is_key_pressed(KEY_DOWN):
+			cam_target.y = maxf(cam_target.y - 1.5 * delta, 0.0)
+	elif play_mode:
 		cam_target = cam_target.lerp(player.global_position + Vector3(0, 0.35, 0), 1.0 - exp(-10.0 * delta))
-	if Input.is_key_pressed(KEY_Q):
-		cam_yaw += 1.8 * delta
-	if Input.is_key_pressed(KEY_E):
-		cam_yaw -= 1.8 * delta
+		if keys_live and Input.is_key_pressed(KEY_UP):
+			cam_pitch = clampf(cam_pitch + 1.2 * delta, 0.05, 1.45)
+		if keys_live and Input.is_key_pressed(KEY_DOWN):
+			cam_pitch = clampf(cam_pitch - 1.2 * delta, 0.05, 1.45)
+	if keys_live:
+		if Input.is_key_pressed(KEY_LEFT):
+			cam_yaw += 1.8 * delta
+		if Input.is_key_pressed(KEY_RIGHT):
+			cam_yaw -= 1.8 * delta
+		if Input.is_key_pressed(KEY_Q):
+			cam_dist = clampf(cam_dist * (1.0 + 1.2 * delta), 1.5, 40.0)
+		if Input.is_key_pressed(KEY_E):
+			cam_dist = clampf(cam_dist * (1.0 - 1.2 * delta), 1.5, 40.0)
 
 	var off := Vector3(cos(cam_pitch) * sin(cam_yaw), sin(cam_pitch), cos(cam_pitch) * cos(cam_yaw)) * cam_dist
 	cam.global_position = cam_target + off
@@ -865,14 +976,19 @@ func _process(delta: float) -> void:
 	var c: Color = (COLORS[cur_color] as Color).lightened(0.35)
 	c.a = 0.45 + 0.2 * sin(Time.get_ticks_msec() / 160.0)
 	ghost_mat.albedo_color = c
-	if ghost.visible and not hover_ground and candidates.size() > 1:
+	if Time.get_ticks_msec() < flash_until:
+		status_label.text = flash_text
+	elif ghost.visible and not hover_ground and candidates.size() > 1:
 		status_label.text = "Way %d of %d  -  press R to flip" % [cand_index % candidates.size() + 1, candidates.size()]
+	elif ghost.visible and hover_ground:
+		status_label.text = "Press R to turn it"
 	else:
 		status_label.text = ""
+	crosshair.visible = kb_aim and not play_mode and not picker.visible
 
 	if shot_path != "":
 		frame_count += 1
-		if frame_count == 40:
+		if frame_count == shot_frame:
 			await RenderingServer.frame_post_draw
 			get_viewport().get_texture().get_image().save_png(shot_path)
 			get_tree().quit()
@@ -956,23 +1072,48 @@ func setup_ui() -> void:
 	row.add_theme_constant_override("separation", 10)
 	bar.add_child(row)
 
-	for s in SHAPES:
-		shape_buttons[s] = add_button(row, SHAPE_LABELS[s], Vector2(96, 72), set_shape.bind(s))
+	# Every button shows the key that does the same thing.
+	for i in SHAPES.size():
+		var b := add_button(row, str(i + 1), Vector2(76, 72), set_shape.bind(SHAPES[i]))
+		b.icon = shape_icon(SHAPES[i])
+		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
+		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		shape_buttons[SHAPES[i]] = b
 	row.add_child(VSeparator.new())
 	for i in COLORS.size():
-		color_buttons.append(add_button(row, "", Vector2(56, 72), set_color.bind(i)))
+		var b := add_button(row, "C" if i == 0 else "", Vector2(46, 72), set_color.bind(i))
+		b.add_theme_color_override("font_color", Color(0, 0, 0, 0.55))
+		color_buttons.append(b)
 	row.add_child(VSeparator.new())
-	erase_button = add_button(row, "Eraser", Vector2(96, 72), func(): set_erase(not erase_mode))
-	undo_button = add_button(row, "Undo", Vector2(80, 72), undo)
-	char_button = add_button(row, "", Vector2(76, 72), func(): show_picker(not picker.visible))
+	flip_button = add_button(row, "R\nFlip", Vector2(76, 72), flip)
+	erase_button = add_button(row, "X\nEraser", Vector2(84, 72), func(): set_erase(not erase_mode))
+	undo_button = add_button(row, "Z\nUndo", Vector2(76, 72), undo)
+	char_button = add_button(row, "P", Vector2(84, 72), func(): show_picker(not picker.visible))
 	char_button.expand_icon = true
-	char_button.tooltip_text = "Pick your explorer (P)"
-	play_button = add_button(row, "Play!", Vector2(110, 72), func(): set_play(not play_mode))
+	play_button = add_button(row, "Tab\nPlay!", Vector2(96, 72), func(): set_play(not play_mode))
 	build_picker(layer)
+	setup_help(layer)
+
+	# Aiming crosshair for keyboard building.
+	crosshair = Control.new()
+	crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
+	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(crosshair)
+	for r in [[30, 4, Color(1, 1, 1, 0.9)], [8, 0, Color(1, 1, 1, 0.9)]]:
+		var ring := Panel.new()
+		var sb := make_style(Color(0, 0, 0, 0) if r[1] > 0 else r[2], r[2], r[1])
+		sb.set_corner_radius_all(r[0])
+		sb.shadow_color = Color(0, 0, 0, 0.35)
+		sb.shadow_size = 3
+		ring.add_theme_stylebox_override("panel", sb)
+		ring.size = Vector2(r[0], r[0])
+		ring.position = -ring.size / 2
+		ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		crosshair.add_child(ring)
 
 	hint_label = Label.new()
 	hint_label.position = Vector2(18, 14)
-	hint_label.add_theme_font_size_override("font_size", 15)
+	hint_label.add_theme_font_size_override("font_size", 18)
 	hint_label.add_theme_color_override("font_color", Color.WHITE)
 	hint_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
 	hint_label.add_theme_constant_override("outline_size", 5)
@@ -997,18 +1138,126 @@ func refresh_ui() -> void:
 		style_button(color_buttons[i], COLORS[i], i == cur_color and not erase_mode)
 	style_button(erase_button, Color("b53a3a") if erase_mode else Color("3a4a63"), erase_mode)
 	style_button(undo_button, Color("3a4a63"), false)
-	for b in shape_buttons.values() + color_buttons + [erase_button, undo_button]:
+	style_button(flip_button, Color("3a4a63"), false)
+	for b in shape_buttons.values() + color_buttons + [flip_button, erase_button, undo_button]:
 		(b as Button).visible = not play_mode
 	for sep in (char_button.get_parent() as Node).find_children("*", "VSeparator", false, false):
 		(sep as Control).visible = not play_mode
 	char_button.icon = load("res://assets/portraits/%s.png" % player.character)
 	style_button(char_button, Color("3a4a63"), false)
-	play_button.text = "Build!" if play_mode else "Play!"
+	play_button.text = "Tab\nBuild!" if play_mode else "Tab\nPlay!"
 	style_button(play_button, Color("2f9e55"), false)
+	refresh_help()
+
+
+func setup_help(layer: CanvasLayer) -> void:
+	help_panel = PanelContainer.new()
+	help_panel.add_theme_stylebox_override("panel", make_style(Color(0.04, 0.07, 0.14, 0.62), Color(0, 0, 0, 0), 0))
+	help_panel.position = Vector2(14, 14)
+	help_panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(help_panel)
+	help_grid = GridContainer.new()
+	help_grid.columns = 2
+	help_grid.add_theme_constant_override("h_separation", 12)
+	help_grid.add_theme_constant_override("v_separation", 5)
+	help_panel.add_child(help_grid)
+
+
+func keycap(text: String) -> Control:
+	var pc := PanelContainer.new()
+	var sb := make_style(Color("f4f6fa"), Color("9aa7bd"), 0)
+	sb.border_width_bottom = 3
+	sb.set_corner_radius_all(6)
+	sb.content_margin_left = 7
+	sb.content_margin_right = 7
+	sb.content_margin_top = 1
+	sb.content_margin_bottom = 1
+	pc.add_theme_stylebox_override("panel", sb)
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 16)
+	l.add_theme_color_override("font_color", Color("1d2a40"))
+	pc.add_child(l)
+	return pc
+
+
+func refresh_help() -> void:
+	for c in help_grid.get_children():
+		help_grid.remove_child(c)
+		c.queue_free()
+	var rows: Array
 	if play_mode:
-		hint_label.text = "WASD / arrows: walk   Space: jump   Right-drag or Q/E: turn camera   Tab: back to building"
+		rows = [
+			[["W", "A", "S", "D"], "Walk"], [["Space"], "Jump"],
+			[["Left", "Right"], "Spin the camera"], [["Up", "Down"], "Look up / down"],
+			[["Q", "E"], "Zoom out / in"], [["Tab"], "Back to building"],
+			[["P"], "Pick your explorer"], [["H"], "Hide this help"],
+		]
 	else:
-		hint_label.text = "Click: place tile   Right-click: remove   R: flip   1-4: shape   C: colour   Z: undo\nRight-drag / two-finger swipe: spin   Scroll / pinch: zoom   WASD: move   Tab: play"
+		rows = [
+			[["W", "A", "S", "D"], "Move the aim"], [["Left", "Right"], "Spin the camera"],
+			[["Up", "Down"], "Aim higher / lower"], [["Q", "E"], "Zoom out / in"],
+			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"],
+			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
+			[["C"], "Change colour"], [["Z"], "Undo"],
+			[["Tab"], "Go exploring!"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
+		]
+	for r in rows:
+		var keys := HBoxContainer.new()
+		keys.add_theme_constant_override("separation", 4)
+		for k in r[0]:
+			keys.add_child(keycap(k))
+		help_grid.add_child(keys)
+		var l := Label.new()
+		l.text = r[1]
+		l.add_theme_font_size_override("font_size", 17)
+		help_grid.add_child(l)
+	help_panel.visible = help_visible
+	help_panel.reset_size.call_deferred()
+	hint_label.text = "" if help_visible else "H: show controls"
+
+
+func shape_icon(shape: String) -> ImageTexture:
+	# Little filled silhouette of the tile for its toolbar button.
+	var size := 40
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	var v := shape_verts(shape)
+	var poly := PackedVector2Array()
+	var scale := 30.0 if shape == "big" else (17.0 if shape == "square" else 22.0)
+	if shape == "tall":
+		scale = 20.0
+	for p in v:
+		poly.append(Vector2(p.x, p.z) * scale + Vector2(size, size) / 2)
+	var minp := Vector2(INF, INF)
+	var maxp := Vector2(-INF, -INF)
+	for q in poly:
+		minp = minp.min(q)
+		maxp = maxp.max(q)
+	var shift := Vector2(size, size) / 2 - (minp + maxp) / 2  # centre the silhouette
+	for i in poly.size():
+		poly[i] += shift
+	for y in size:
+		for x in size:
+			if Geometry2D.is_point_in_polygon(Vector2(x + 0.5, y + 0.5), poly):
+				img.set_pixel(x, y, Color(0.85, 0.93, 1.0))
+	return ImageTexture.create_from_image(img)
+
+
+func run_key_script() -> void:
+	# Testing aid: replays --keys=... as real key presses.
+	for step in key_script:
+		var down := InputEventKey.new()
+		down.keycode = step[0]
+		down.pressed = true
+		Input.parse_input_event(down)
+		for i in step[1]:
+			await get_tree().process_frame
+		var up := InputEventKey.new()
+		up.keycode = step[0]
+		up.pressed = false
+		Input.parse_input_event(up)
+		for i in 4:
+			await get_tree().process_frame
 
 
 func build_picker(layer: CanvasLayer) -> void:
@@ -1043,24 +1292,52 @@ func build_picker(layer: CanvasLayer) -> void:
 		b.expand_icon = true
 		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
-		b.text = CHARACTER_NAMES[c]
+		b.text = "%d  %s" % [CHARACTERS.find(c) + 1, CHARACTER_NAMES[c]]
 		b.add_theme_font_size_override("font_size", 30)
 		b.set_meta("character", c)
 		b.pressed.connect(pick_character.bind(c))
 		row.add_child(b)
-	var close := add_button(col, "Close", Vector2(160, 64), func(): show_picker(false))
+	var how := Label.new()
+	how.text = "Press 1, 2, 3 or 4  -  or use the arrow keys and Enter"
+	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	how.add_theme_font_size_override("font_size", 22)
+	how.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
+	how.add_theme_constant_override("outline_size", 6)
+	col.add_child(how)
+	var close := add_button(col, "Esc  Close", Vector2(170, 64), func(): show_picker(false))
 	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
 	style_button(close, Color("3a4a63"), false)
 
 
 func show_picker(on: bool) -> void:
+	if on and not picker.visible:
+		picker_sel = maxi(CHARACTERS.find(player.character), 0)
 	picker.visible = on
 	if on:
 		for b in picker.find_children("*", "Button", true, false):
 			if (b as Node).has_meta("character"):
-				style_button(b, Color("ffffff") if b.get_meta("character") == player.character else Color("dfe6f2"), b.get_meta("character") == player.character)
+				var sel: bool = CHARACTERS.find(b.get_meta("character")) == picker_sel
+				style_button(b, Color("ffffff") if sel else Color("c9d3e3"), sel)
+				(b as Button).get_theme_stylebox("normal").border_color = Color("ffb400") if sel else Color("9aa7bd")
+				(b as Button).get_theme_stylebox("normal").set_border_width_all(8 if sel else 2)
 				(b as Button).add_theme_color_override("font_color", Color("1d2a40"))
 				(b as Button).add_theme_color_override("font_hover_color", Color("1d2a40"))
+
+
+func picker_key(key: int) -> void:
+	match key:
+		KEY_1, KEY_2, KEY_3, KEY_4:
+			pick_character(CHARACTERS[key - KEY_1])
+		KEY_LEFT, KEY_A:
+			picker_sel = (picker_sel + CHARACTERS.size() - 1) % CHARACTERS.size()
+			show_picker(true)
+		KEY_RIGHT, KEY_D:
+			picker_sel = (picker_sel + 1) % CHARACTERS.size()
+			show_picker(true)
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+			pick_character(CHARACTERS[picker_sel])
+		KEY_ESCAPE, KEY_P:
+			show_picker(false)
 
 
 func pick_character(c: String) -> void:
@@ -1191,6 +1468,14 @@ func build_demo() -> void:
 	for i in 4:
 		var cands := edge_candidates(big, i, (big.verts[i] + big.verts[(i + 1) % 4]) / 2, Vector3.UP, "big")
 		spawn_tile("big", [0, 4, 3, 1][i], cands[0])
+	# Right triangles: a wall of two (mirror pair) and a sloped roof on a floor square.
+	var pad := spawn_tile("square", 6, ground_candidates(Vector3(-0.6, 0, 3.4), "square")[0])
+	var c0 := edge_candidates(pad, 0, (pad.verts[0] + pad.verts[1]) / 2, Vector3.UP, "right")
+	print("right-triangle options on a square edge: ", c0.size())
+	var w1 := spawn_tile("right", 0, c0[0])
+	var c1 := edge_candidates(w1, 2, (w1.verts[2] + w1.verts[0]) / 2, w1.xform.basis.y, "right")
+	print("right-triangle options on a long edge: ", c1.size())
+	spawn_tile("right", 1, c1[0])
 	print("demo tiles: ", tiles.size())
 	cam_target = Vector3(0, 0.8, 0.5)
 	cam_dist = 9.0

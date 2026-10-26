@@ -48,13 +48,13 @@ func _physics_process(delta: float) -> void:
 
 	var x := 0.0
 	var z := 0.0
-	if Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP):
+	if Input.is_key_pressed(KEY_W):
 		z -= 1.0
-	if Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN):
+	if Input.is_key_pressed(KEY_S):
 		z += 1.0
-	if Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT):
+	if Input.is_key_pressed(KEY_A):
 		x -= 1.0
-	if Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT) or auto_walk:
+	if Input.is_key_pressed(KEY_D) or auto_walk:
 		x += 1.0
 
 	# Move relative to where the camera is looking.
