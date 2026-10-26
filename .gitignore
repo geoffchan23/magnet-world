@@ -1,3 +1,5 @@
 .godot/
 *.import
 shots/
+__pycache__/
+*.blend1
