@@ -210,21 +210,21 @@ def export(path, objs):
 
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-main = make_island("MainIsland", R=8.0, depth=6.5, flat_r=6.6, seed=1)
+main = make_island("MainIsland", R=14.0, depth=9.5, flat_r=12.5, seed=1, rings_top=26, rings_under=22, seg=168)
 export(os.path.join(OUT, "main.glb"), [main])
 
 # Decor: satellite islands with trees + rocks, and a few props on the main island's lip.
 decor = []
-sats = [((-14, 6, 2.5), 2.6, 3), ((12, -9, -1.5), 2.0, 4), ((4, 15, 4.0), 1.6, 5),
-        ((-9, -15, 1.0), 3.0, 6), ((17, 8, -3.5), 1.3, 7)]
+sats = [((-23, 10, 3.0), 3.2, 3), ((20, -15, -1.5), 2.4, 4), ((7, 25, 5.0), 2.0, 5),
+        ((-15, -24, 1.5), 3.6, 6), ((28, 12, -4.0), 1.6, 7), ((-30, -6, -2.5), 2.2, 8)]
 for i, (pos, r, sd) in enumerate(sats):
     isl = make_island("Sat%d" % i, R=r, depth=r * 1.4, flat_r=r * 0.55, seed=sd,
                       rings_top=6, rings_under=10, seg=40, origin=pos)
     decor.append(isl)
     decor.append(make_tree("SatTree%d" % i, Vector(pos) + Vector((0.2 * r, -0.1 * r, 0)), sd, h=1.6 + r * 0.25))
     decor.append(make_rock("SatRock%d" % i, Vector(pos) + Vector((-0.45 * r, 0.3 * r, -0.02)), sd, 0.25 + 0.08 * r))
-for i, a in enumerate([1.9, 2.4, 3.1, 4.0, 4.6]):
-    r = 7.35
+for i, a in enumerate([0.3, 1.1, 1.9, 2.4, 3.1, 4.0, 4.6, 5.5]):
+    r = 13.4
     p = Vector((math.cos(a) * r, math.sin(a) * r, -0.2))
     if i % 2 == 0:
         decor.append(make_tree("LipTree%d" % i, p, 20 + i, h=2.0 + 0.3 * (i % 3)))

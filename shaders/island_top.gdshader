@@ -5,7 +5,7 @@ uniform sampler2D albedo_tex : source_color, filter_linear_mipmap_anisotropic, r
 uniform sampler2D normal_tex : hint_normal, filter_linear_mipmap_anisotropic, repeat_enable;
 uniform vec3 grass_tint : source_color = vec3(0.62, 0.95, 0.42);
 uniform float scale = 0.45;
-uniform float grid_radius = 6.6;
+uniform float grid_radius = 12.5;
 uniform float grid_strength = 1.0;
 
 varying vec3 wpos;

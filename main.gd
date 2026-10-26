@@ -16,6 +16,11 @@ const SAVE_PATH := "user://world.json"
 const SETTINGS_PATH := "user://settings.json"
 const CHARACTERS := ["kid", "fox", "robot", "dino"]
 const CHARACTER_NAMES := {"kid": "Kid", "fox": "Fox", "robot": "Robot", "dino": "Dino"}
+const BUILD_R := 12.5  # radius of the flat build area on the main island
+const ITEMS := {
+	"couch": {"name": "Our Living Room Couch", "scene": "res://assets/items/couch.glb",
+		"icon": "res://assets/items/couch.png", "scale": 0.5},
+}
 const T := 0.05  # tile (frame) thickness
 const SNAP_EPS := 0.07  # how close corners must get to "click" together
 const H := 0.8660254  # height of a unit equilateral triangle
@@ -66,6 +71,17 @@ var picker: Control
 var shape_buttons := {}
 var color_buttons: Array = []
 
+var items: Array = []  # placed things from the Items menu: {id, item, xform, node}
+var place_item := ""  # item being placed right now ("" = building with tiles)
+var item_rot := 0  # 45-degree steps
+var item_ghost: Node3D
+var item_ghost_xf := Transform3D()
+var item_ghost_ok := false
+var hover_item = null
+var lit_item = null
+var items_menu: Control
+var items_sel := 0
+var items_button: Button
 var kb_aim := true  # aim with the screen-centre crosshair (keyboard) instead of the mouse
 var crosshair: Control
 var help_panel: PanelContainer
@@ -262,12 +278,12 @@ func scatter_grass() -> void:
 	rng.seed = 42
 	var xforms: Array = []
 	var colors: Array = []
-	for i in 9000:
-		if xforms.size() >= 3200:
+	for i in 30000:
+		if xforms.size() >= 6000:
 			break
 		var a := rng.randf() * TAU
-		var r := sqrt(rng.randf()) * 8.8
-		if r < 5.7 and rng.randf() > 0.04:
+		var r := sqrt(rng.randf()) * (BUILD_R + 2.3)
+		if r < BUILD_R - 0.9 and rng.randf() > 0.02:
 			continue  # keep the build area mostly clear
 		var p := Vector3(cos(a) * r, 2.0, sin(a) * r)
 		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p, p + Vector3.DOWN * 4.0, 2))
@@ -756,7 +772,11 @@ func nearest_edge(t: Dictionary, p: Vector3) -> int:
 func update_hover() -> void:
 	ghost.visible = false
 	hover_tile = null
-	if play_mode or picker.visible:
+	hover_item = null
+	if item_ghost:
+		item_ghost.visible = false
+	update_item_hover()
+	if play_mode or menu_open() or place_item != "":
 		return
 	if not kb_aim and get_viewport().gui_get_hovered_control() != null:
 		return
@@ -768,6 +788,9 @@ func update_hover() -> void:
 		return
 	var pos: Vector3 = hit.position
 	var col: Object = hit.collider
+	if col.has_meta("item"):
+		hover_item = col.get_meta("item")  # removable (Backspace / eraser), never built on
+		return
 	if col.has_meta("tile"):
 		hover_tile = col.get_meta("tile")
 		if erase_mode:
@@ -788,7 +811,7 @@ func update_hover() -> void:
 			candidates = edge_candidates(hover_tile, ei, pos, view_side, cur_shape)
 			cand_index = 0
 	else:
-		if erase_mode or pos.y < -0.05 or Vector2(pos.x, pos.z).length() > 6.6:
+		if erase_mode or pos.y < -0.05 or Vector2(pos.x, pos.z).length() > BUILD_R:
 			return
 		var key := "g%d:%d:%s:%d:%d" % [floori(pos.x * 2), floori(pos.z * 2), cur_shape, ground_rot, tiles.size()]
 		if key != hover_key:
@@ -817,15 +840,25 @@ func place_ghost() -> void:
 
 func action() -> void:
 	# Space / left-click: place the tile (or remove one in eraser mode).
-	if erase_mode:
-		if hover_tile != null:
-			remove_tile(hover_tile)
+	if place_item != "":
+		place_item_here()
+	elif erase_mode:
+		remove_hovered()
 	else:
 		place_ghost()
 
 
+func remove_hovered() -> void:
+	if hover_tile != null:
+		remove_tile(hover_tile)
+	elif hover_item != null:
+		remove_item(hover_item)
+
+
 func flip() -> void:
-	if hover_ground:
+	if place_item != "":
+		item_rot = (item_rot + 1) % 8
+	elif hover_ground:
 		ground_rot = (ground_rot + 1) % 4
 		hover_key = ""
 	elif candidates.size() > 1:
@@ -848,11 +881,261 @@ func undo() -> void:
 			if t.id == u.id:
 				remove_tile(t, false)
 				break
+	elif u.op == "add_item":
+		for it in items:
+			if it.id == u.id:
+				remove_item(it, false)
+				break
+	elif u.op == "remove_item":
+		spawn_item(u.item, u.xform)
+		play_sfx(click_snd)
+		save_world()
 	else:
 		spawn_tile(u.shape, u.color, u.xform)
 		play_sfx(click_snd)
 		hover_key = ""
 		save_world()
+
+
+# ---------------------------------------------------------------- items (couch etc.)
+
+func fabric_mat() -> StandardMaterial3D:
+	if not mat_cache.has("fabric"):
+		var m := StandardMaterial3D.new()
+		m.albedo_color = Color("cdbfa6")  # warm cream, like the real couch
+		m.roughness = 1.0
+		m.metallic_specular = 0.2
+		m.normal_enabled = true
+		m.normal_texture = load("res://assets/textures/fabric_normal.jpg")
+		m.normal_scale = 0.8
+		m.uv1_triplanar = true
+		m.uv1_scale = Vector3(5, 5, 5)
+		mat_cache["fabric"] = m
+	return mat_cache["fabric"]
+
+
+func make_item_node(item: String, ghost_look: bool) -> Node3D:
+	# The model is re-centred so it turns around its middle.
+	var info: Dictionary = ITEMS[item]
+	var root: Node3D = Node3D.new() if ghost_look else StaticBody3D.new()
+	var model: Node3D = (load(info.scene) as PackedScene).instantiate()
+	model.scale = Vector3.ONE * float(info.scale)
+	root.add_child(model)
+	var box := AABB()
+	var first := true
+	for mi in model.find_children("*", "MeshInstance3D", true, false):
+		var m := mi as MeshInstance3D
+		var local := model.transform * m.transform
+		var b := local * m.get_aabb()
+		box = b if first else box.merge(b)
+		first = false
+		if ghost_look:
+			m.material_override = mat_cache["item_ghost"]
+			m.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		else:
+			for i in m.mesh.get_surface_count():
+				var src := m.mesh.surface_get_material(i)
+				if src and src.resource_name == "Fabric":
+					m.set_surface_override_material(i, fabric_mat())
+			var cs := CollisionShape3D.new()
+			cs.shape = m.mesh.create_convex_shape()
+			cs.transform = local
+			root.add_child(cs)
+	var centre := box.get_center()
+	model.position -= Vector3(centre.x, 0, centre.z)
+	for c in root.get_children():
+		if c is CollisionShape3D:
+			(c as Node3D).position -= Vector3(centre.x, 0, centre.z)
+	if root is StaticBody3D:
+		(root as StaticBody3D).collision_layer = 1
+		(root as StaticBody3D).collision_mask = 0
+	return root
+
+
+func spawn_item(item: String, xf: Transform3D) -> Dictionary:
+	var node := make_item_node(item, false)
+	node.transform = xf
+	add_child(node)
+	var it := {"id": next_id, "item": item, "xform": xf, "node": node}
+	next_id += 1
+	node.set_meta("item", it)
+	items.append(it)
+	return it
+
+
+func remove_item(it: Dictionary, record := true) -> void:
+	for i in items.size():
+		if items[i].id == it.id:
+			items.remove_at(i)
+			break
+	if lit_item != null and lit_item.id == it.id:
+		lit_item = null
+	(it.node as Node).queue_free()
+	if record:
+		undo_stack.append({"op": "remove_item", "item": it.item, "xform": it.xform})
+	play_sfx(pop_snd)
+	save_world()
+
+
+func set_place_item(item: String) -> void:
+	place_item = item
+	item_rot = 0
+	if item_ghost:
+		item_ghost.queue_free()
+		item_ghost = null
+	if item != "":
+		if not mat_cache.has("item_ghost"):
+			var gm := StandardMaterial3D.new()
+			gm.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			gm.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			gm.albedo_color = Color(0.85, 0.93, 1.0, 0.5)
+			mat_cache["item_ghost"] = gm
+		erase_mode = false
+		item_ghost = make_item_node(item, true)
+		item_ghost.visible = false
+		add_child(item_ghost)
+	hover_key = ""
+	refresh_ui()
+
+
+func update_item_hover() -> void:
+	# Ghost of the item being placed follows the aim along the ground (snaps to half-tiles).
+	if place_item == "" or play_mode or menu_open() or item_ghost == null:
+		return
+	var mp := get_viewport().get_visible_rect().size / 2.0 if kb_aim else get_viewport().get_mouse_position()
+	var from := cam.project_ray_origin(mp)
+	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 2)
+	var hit := get_world_3d().direct_space_state.intersect_ray(q)
+	if hit.is_empty():
+		return
+	var pos: Vector3 = hit.position
+	item_ghost_xf = Transform3D(Basis(Vector3.UP, item_rot * PI / 4), Vector3(snappedf(pos.x, 0.5), 0.0, snappedf(pos.z, 0.5)))
+	item_ghost_ok = pos.y > -0.05 and Vector2(pos.x, pos.z).length() < BUILD_R - 0.6
+	for it in items:
+		if (it.xform.origin as Vector3).distance_to(item_ghost_xf.origin) < 0.9:
+			item_ghost_ok = false
+	(mat_cache["item_ghost"] as StandardMaterial3D).albedo_color = Color(0.85, 0.93, 1.0, 0.5) if item_ghost_ok else Color(1.0, 0.35, 0.3, 0.5)
+	item_ghost.transform = item_ghost_xf
+	item_ghost.visible = true
+
+
+func highlight_item(it) -> void:
+	# Red tint on the item the eraser is pointing at.
+	if lit_item == it or (lit_item != null and it != null and lit_item.id == it.id):
+		return
+	for target in [lit_item, it]:
+		if target == null:
+			continue
+		for mi in (target.node as Node).find_children("*", "MeshInstance3D", true, false):
+			(mi as MeshInstance3D).material_overlay = erase_mat if target == it else null
+	lit_item = it
+
+
+func place_item_here() -> void:
+	if item_ghost == null or not item_ghost.visible:
+		return
+	if not item_ghost_ok:
+		flash("It doesn't fit there - try another spot")
+		return
+	var it := spawn_item(place_item, item_ghost_xf)
+	undo_stack.append({"op": "add_item", "id": it.id})
+	play_sfx(click_snd)
+	save_world()
+	flash("%s added!" % ITEMS[place_item].name)
+	set_place_item("")
+
+
+func menu_open() -> bool:
+	return picker.visible or items_menu.visible
+
+
+func build_items_menu(layer: CanvasLayer) -> void:
+	# "Add something to your world" - one big card per item.
+	items_menu = ColorRect.new()
+	(items_menu as ColorRect).color = Color(0.05, 0.08, 0.15, 0.55)
+	items_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	items_menu.mouse_filter = Control.MOUSE_FILTER_STOP
+	items_menu.visible = false
+	layer.add_child(items_menu)
+	var centre := CenterContainer.new()
+	centre.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	items_menu.add_child(centre)
+	var col := VBoxContainer.new()
+	col.add_theme_constant_override("separation", 22)
+	centre.add_child(col)
+	var title := Label.new()
+	title.text = "Add something to your world"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 44)
+	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
+	title.add_theme_constant_override("outline_size", 10)
+	col.add_child(title)
+	var row := HBoxContainer.new()
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 22)
+	col.add_child(row)
+	var keys := ITEMS.keys()
+	for i in keys.size():
+		var info: Dictionary = ITEMS[keys[i]]
+		var b := Button.new()
+		b.focus_mode = Control.FOCUS_NONE
+		b.custom_minimum_size = Vector2(340, 360)
+		b.icon = load(info.icon)
+		b.expand_icon = true
+		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
+		b.text = "%d  %s" % [i + 1, info.name]
+		b.add_theme_font_size_override("font_size", 24)
+		b.add_theme_color_override("font_color", Color("1d2a40"))
+		b.add_theme_color_override("font_hover_color", Color("1d2a40"))
+		b.set_meta("item", keys[i])
+		b.pressed.connect(choose_item.bind(keys[i]))
+		row.add_child(b)
+	var how := Label.new()
+	how.text = "Press the number  -  or use the arrow keys and Enter"
+	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	how.add_theme_font_size_override("font_size", 22)
+	how.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
+	how.add_theme_constant_override("outline_size", 6)
+	col.add_child(how)
+	var close := add_button(col, "Esc  Close", Vector2(170, 64), func(): show_items(false))
+	close.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	style_button(close, Color("3a4a63"), false)
+
+
+func show_items(on: bool) -> void:
+	items_menu.visible = on
+	if on:
+		for b in items_menu.find_children("*", "Button", true, false):
+			if (b as Node).has_meta("item"):
+				var sel: bool = ITEMS.keys().find(b.get_meta("item")) == items_sel
+				style_button(b, Color("ffffff") if sel else Color("c9d3e3"), sel)
+				(b as Button).get_theme_stylebox("normal").border_color = Color("ffb400") if sel else Color("9aa7bd")
+				(b as Button).get_theme_stylebox("normal").set_border_width_all(8 if sel else 2)
+
+
+func items_key(key: int) -> void:
+	var keys := ITEMS.keys()
+	if key >= KEY_1 and key <= KEY_9 and key - KEY_1 < keys.size():
+		choose_item(keys[key - KEY_1])
+		return
+	match key:
+		KEY_LEFT, KEY_A:
+			items_sel = (items_sel + keys.size() - 1) % keys.size()
+			show_items(true)
+		KEY_RIGHT, KEY_D:
+			items_sel = (items_sel + 1) % keys.size()
+			show_items(true)
+		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
+			choose_item(keys[items_sel])
+		KEY_ESCAPE, KEY_I:
+			show_items(false)
+
+
+func choose_item(item: String) -> void:
+	show_items(false)
+	set_place_item(item)
+	play_sfx(click_snd)
 
 
 # ---------------------------------------------------------------- input + camera
@@ -871,15 +1154,15 @@ func _unhandled_input(ev: InputEvent) -> void:
 				right_moved = false
 			else:
 				orbiting = false
-				if not right_moved and not play_mode and hover_tile != null:
-					remove_tile(hover_tile)
+				if not right_moved and not play_mode:
+					remove_hovered()
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_UP and mb.pressed:
 			cam_dist = clampf(cam_dist * 0.9, 1.5, 40.0)
 		elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN and mb.pressed:
 			cam_dist = clampf(cam_dist * 1.1, 1.5, 40.0)
 	elif ev is InputEventMouseMotion:
 		var mm := ev as InputEventMouseMotion
-		if not orbiting and mm.relative.length() > 2.0:
+		if not orbiting and mm.relative.length() > 2.0 and key_script.is_empty():
 			kb_aim = false
 		if orbiting:
 			cam_yaw -= mm.relative.x * 0.008
@@ -896,6 +1179,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 		var key := (ev as InputEventKey).keycode
 		if picker.visible:
 			picker_key(key)
+			return
+		if items_menu.visible:
+			items_key(key)
 			return
 		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE]:
 			kb_aim = true
@@ -918,8 +1204,14 @@ func _unhandled_input(ev: InputEvent) -> void:
 				if not play_mode:
 					action()
 			KEY_BACKSPACE, KEY_DELETE:
-				if not play_mode and hover_tile != null:
-					remove_tile(hover_tile)
+				if not play_mode:
+					remove_hovered()
+			KEY_I:
+				if not play_mode:
+					show_items(true)
+			KEY_ESCAPE:
+				if place_item != "":
+					set_place_item("")
 			KEY_TAB:
 				set_play(not play_mode)
 			KEY_P:
@@ -930,7 +1222,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 
 
 func _process(delta: float) -> void:
-	var keys_live := not picker.visible
+	var keys_live := not menu_open()
 	if not play_mode and keys_live:
 		# WASD slides the crosshair around the island; up/down arrows aim higher/lower.
 		var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
@@ -945,7 +1237,7 @@ func _process(delta: float) -> void:
 		if Input.is_key_pressed(KEY_D):
 			move += right
 		cam_target += move * clampf(cam_dist * 0.45, 1.5, 6.0) * delta
-		var flat := Vector2(cam_target.x, cam_target.z).limit_length(12.0)
+		var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
 		cam_target.x = flat.x
 		cam_target.z = flat.y
 		if Input.is_key_pressed(KEY_UP):
@@ -973,18 +1265,21 @@ func _process(delta: float) -> void:
 	cam.look_at(cam_target, Vector3.UP)
 
 	update_hover()
+	highlight_item(hover_item if erase_mode and place_item == "" else null)
 	var c: Color = (COLORS[cur_color] as Color).lightened(0.35)
 	c.a = 0.45 + 0.2 * sin(Time.get_ticks_msec() / 160.0)
 	ghost_mat.albedo_color = c
 	if Time.get_ticks_msec() < flash_until:
 		status_label.text = flash_text
+	elif place_item != "":
+		status_label.text = "Move to pick a spot  -  R to turn  -  Space to put it down  -  Esc to cancel"
 	elif ghost.visible and not hover_ground and candidates.size() > 1:
 		status_label.text = "Way %d of %d  -  press R to flip" % [cand_index % candidates.size() + 1, candidates.size()]
 	elif ghost.visible and hover_ground:
 		status_label.text = "Press R to turn it"
 	else:
 		status_label.text = ""
-	crosshair.visible = kb_aim and not play_mode and not picker.visible
+	crosshair.visible = kb_aim and not play_mode and not menu_open()
 
 	if shot_path != "":
 		frame_count += 1
@@ -999,6 +1294,7 @@ func _process(delta: float) -> void:
 func set_shape(s: String) -> void:
 	cur_shape = s
 	hover_key = ""
+	set_place_item("")
 	set_erase(false)
 
 
@@ -1085,6 +1381,7 @@ func setup_ui() -> void:
 		b.add_theme_color_override("font_color", Color(0, 0, 0, 0.55))
 		color_buttons.append(b)
 	row.add_child(VSeparator.new())
+	items_button = add_button(row, "I\nItems", Vector2(76, 72), func(): show_items(not items_menu.visible))
 	flip_button = add_button(row, "R\nFlip", Vector2(76, 72), flip)
 	erase_button = add_button(row, "X\nEraser", Vector2(84, 72), func(): set_erase(not erase_mode))
 	undo_button = add_button(row, "Z\nUndo", Vector2(76, 72), undo)
@@ -1092,6 +1389,7 @@ func setup_ui() -> void:
 	char_button.expand_icon = true
 	play_button = add_button(row, "Tab\nPlay!", Vector2(96, 72), func(): set_play(not play_mode))
 	build_picker(layer)
+	build_items_menu(layer)
 	setup_help(layer)
 
 	# Aiming crosshair for keyboard building.
@@ -1139,7 +1437,8 @@ func refresh_ui() -> void:
 	style_button(erase_button, Color("b53a3a") if erase_mode else Color("3a4a63"), erase_mode)
 	style_button(undo_button, Color("3a4a63"), false)
 	style_button(flip_button, Color("3a4a63"), false)
-	for b in shape_buttons.values() + color_buttons + [flip_button, erase_button, undo_button]:
+	style_button(items_button, Color("8a5a2b") if place_item != "" else Color("6b4a2b"), place_item != "")
+	for b in shape_buttons.values() + color_buttons + [items_button, flip_button, erase_button, undo_button]:
 		(b as Button).visible = not play_mode
 	for sep in (char_button.get_parent() as Node).find_children("*", "VSeparator", false, false):
 		(sep as Control).visible = not play_mode
@@ -1200,6 +1499,7 @@ func refresh_help() -> void:
 			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"],
 			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],
+			[["I"], "Add things (like our couch!)"],
 			[["Tab"], "Go exploring!"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
 		]
 	for r in rows:
@@ -1409,25 +1709,37 @@ func save_world() -> void:
 		return
 	var arr: Array = []
 	for t in tiles:
-		var x: Transform3D = t.xform
-		arr.append({"s": t.shape, "c": t.color, "x": [
-			x.basis.x.x, x.basis.x.y, x.basis.x.z, x.basis.y.x, x.basis.y.y, x.basis.y.z,
-			x.basis.z.x, x.basis.z.y, x.basis.z.z, x.origin.x, x.origin.y, x.origin.z]})
+		arr.append({"s": t.shape, "c": t.color, "x": xf_to_arr(t.xform)})
+	var things: Array = []
+	for it in items:
+		things.append({"i": it.item, "x": xf_to_arr(it.xform)})
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify(arr))
+		f.store_string(JSON.stringify({"tiles": arr, "items": things}))
+
+
+static func xf_to_arr(x: Transform3D) -> Array:
+	return [x.basis.x.x, x.basis.x.y, x.basis.x.z, x.basis.y.x, x.basis.y.y, x.basis.y.z,
+		x.basis.z.x, x.basis.z.y, x.basis.z.z, x.origin.x, x.origin.y, x.origin.z]
+
+
+static func arr_to_xf(a: Array) -> Transform3D:
+	return Transform3D(Vector3(a[0], a[1], a[2]), Vector3(a[3], a[4], a[5]), Vector3(a[6], a[7], a[8]), Vector3(a[9], a[10], a[11]))
 
 
 func load_world() -> void:
 	if not FileAccess.file_exists(SAVE_PATH):
 		return
 	var data = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
-	if typeof(data) != TYPE_ARRAY:
+	if data is Array:  # older saves were just the list of tiles
+		data = {"tiles": data, "items": []}
+	if not data is Dictionary:
 		return
-	for d in data:
-		var a: Array = d.x
-		var xf := Transform3D(Vector3(a[0], a[1], a[2]), Vector3(a[3], a[4], a[5]), Vector3(a[6], a[7], a[8]), Vector3(a[9], a[10], a[11]))
-		spawn_tile(d.s, int(d.c), xf)
+	for d in data.get("tiles", []):
+		spawn_tile(d.s, int(d.c), arr_to_xf(d.x))
+	for d in data.get("items", []):
+		if ITEMS.has(d.i):
+			spawn_item(d.i, arr_to_xf(d.x))
 
 
 # ---------------------------------------------------------------- demo build (for testing the snapping)
@@ -1476,6 +1788,7 @@ func build_demo() -> void:
 	var c1 := edge_candidates(w1, 2, (w1.verts[2] + w1.verts[0]) / 2, w1.xform.basis.y, "right")
 	print("right-triangle options on a long edge: ", c1.size())
 	spawn_tile("right", 1, c1[0])
+	spawn_item("couch", Transform3D(Basis(Vector3.UP, PI / 4), Vector3(-6.0, 0, 4.0)))
 	print("demo tiles: ", tiles.size())
 	cam_target = Vector3(0, 0.8, 0.5)
 	cam_dist = 9.0
