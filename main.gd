@@ -82,7 +82,8 @@ var lit_item = null
 var items_menu: Control
 var items_sel := 0
 var items_button: Button
-var kb_aim := true  # aim with the screen-centre crosshair (keyboard) instead of the mouse
+var kb_aim := true  # aim with the keyboard crosshair instead of the mouse
+var aim_pos := Vector2(-1, -1)  # crosshair position on screen (WASD moves it)
 var crosshair: Control
 var help_panel: PanelContainer
 var help_grid: GridContainer
@@ -780,7 +781,7 @@ func update_hover() -> void:
 		return
 	if not kb_aim and get_viewport().gui_get_hovered_control() != null:
 		return
-	var mp := get_viewport().get_visible_rect().size / 2.0 if kb_aim else get_viewport().get_mouse_position()
+	var mp := aim_pos if kb_aim else get_viewport().get_mouse_position()
 	var from := cam.project_ray_origin(mp)
 	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 1 | 2)
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -1002,7 +1003,7 @@ func update_item_hover() -> void:
 	# Ghost of the item being placed follows the aim along the ground (snaps to half-tiles).
 	if place_item == "" or play_mode or menu_open() or item_ghost == null:
 		return
-	var mp := get_viewport().get_visible_rect().size / 2.0 if kb_aim else get_viewport().get_mouse_position()
+	var mp := aim_pos if kb_aim else get_viewport().get_mouse_position()
 	var from := cam.project_ray_origin(mp)
 	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 2)
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -1184,6 +1185,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 			items_key(key)
 			return
 		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE]:
+			if not kb_aim:
+				aim_pos = get_viewport().get_mouse_position()  # pick up where the mouse was
 			kb_aim = true
 		match key:
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
@@ -1224,33 +1227,40 @@ func _unhandled_input(ev: InputEvent) -> void:
 func _process(delta: float) -> void:
 	var keys_live := not menu_open()
 	if not play_mode and keys_live:
-		# WASD slides the crosshair around the island; up/down arrows aim higher/lower.
-		var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
-		var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
-		var move := Vector3.ZERO
+		# WASD moves the crosshair around the screen like a mouse pointer; pushing it
+		# against the edge of the screen scrolls the view that way.
+		var vs := get_viewport().get_visible_rect().size
+		if aim_pos.x < 0.0:
+			aim_pos = vs / 2.0
+		var dir := Vector2.ZERO
 		if Input.is_key_pressed(KEY_W):
-			move += fwd
+			dir.y -= 1.0
 		if Input.is_key_pressed(KEY_S):
-			move -= fwd
+			dir.y += 1.0
 		if Input.is_key_pressed(KEY_A):
-			move -= right
+			dir.x -= 1.0
 		if Input.is_key_pressed(KEY_D):
-			move += right
-		cam_target += move * clampf(cam_dist * 0.45, 1.5, 6.0) * delta
-		var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
-		cam_target.x = flat.x
-		cam_target.z = flat.y
-		if Input.is_key_pressed(KEY_UP):
-			cam_target.y = minf(cam_target.y + 1.5 * delta, 8.0)
-		if Input.is_key_pressed(KEY_DOWN):
-			cam_target.y = maxf(cam_target.y - 1.5 * delta, 0.0)
+			dir.x += 1.0
+		var lo := Vector2(vs.x * 0.06, vs.y * 0.08)
+		var hi := Vector2(vs.x * 0.94, vs.y - 160.0)  # stay above the toolbar
+		var want := aim_pos + dir * vs.y * 0.55 * delta
+		aim_pos = want.clamp(lo, hi)
+		var push := want - aim_pos  # how far past the edge we tried to go
+		if kb_aim and push.length() > 0.0:
+			var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
+			var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
+			var move := right * signf(push.x) + fwd * -signf(push.y)
+			cam_target += move.normalized() * clampf(cam_dist * 0.45, 1.5, 6.0) * delta
+			var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
+			cam_target.x = flat.x
+			cam_target.z = flat.y
 	elif play_mode:
 		cam_target = cam_target.lerp(player.global_position + Vector3(0, 0.35, 0), 1.0 - exp(-10.0 * delta))
-		if keys_live and Input.is_key_pressed(KEY_UP):
-			cam_pitch = clampf(cam_pitch + 1.2 * delta, 0.05, 1.45)
-		if keys_live and Input.is_key_pressed(KEY_DOWN):
-			cam_pitch = clampf(cam_pitch - 1.2 * delta, 0.05, 1.45)
 	if keys_live:
+		if Input.is_key_pressed(KEY_UP):
+			cam_pitch = clampf(cam_pitch + 1.2 * delta, 0.05, 1.45)
+		if Input.is_key_pressed(KEY_DOWN):
+			cam_pitch = clampf(cam_pitch - 1.2 * delta, 0.05, 1.45)
 		if Input.is_key_pressed(KEY_LEFT):
 			cam_yaw += 1.8 * delta
 		if Input.is_key_pressed(KEY_RIGHT):
@@ -1280,6 +1290,8 @@ func _process(delta: float) -> void:
 	else:
 		status_label.text = ""
 	crosshair.visible = kb_aim and not play_mode and not menu_open()
+	crosshair.position = aim_pos
+	crosshair.move_to_front()  # never hidden behind the controls card
 
 	if shot_path != "":
 		frame_count += 1
@@ -1394,7 +1406,6 @@ func setup_ui() -> void:
 
 	# Aiming crosshair for keyboard building.
 	crosshair = Control.new()
-	crosshair.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
 	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(crosshair)
 	for r in [[30, 4, Color(1, 1, 1, 0.9)], [8, 0, Color(1, 1, 1, 0.9)]]:
@@ -1495,7 +1506,7 @@ func refresh_help() -> void:
 	else:
 		rows = [
 			[["W", "A", "S", "D"], "Move the aim"], [["Left", "Right"], "Spin the camera"],
-			[["Up", "Down"], "Aim higher / lower"], [["Q", "E"], "Zoom out / in"],
+			[["Up", "Down"], "Tilt the camera"], [["Q", "E"], "Zoom out / in"],
 			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"],
 			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],

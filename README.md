@@ -14,9 +14,9 @@ Everything works from the keyboard (an on-screen controls card shows the keys; H
 
 | Build mode | | Explore mode (Tab) | |
 |---|---|---|---|
-| W A S D | move the aim (crosshair) | W A S D | walk |
+| W A S D | move the crosshair (scrolls at the screen edge) | W A S D | walk |
 | Left / Right | spin camera | Space | jump |
-| Up / Down | aim higher / lower | Up / Down | look up / down |
+| Up / Down | tilt camera | Up / Down | look up / down |
 | Q / E | zoom out / in | Q / E | zoom |
 | Space | place tile | P | pick explorer |
 | R | flip / turn the tile | Tab | back to building |
