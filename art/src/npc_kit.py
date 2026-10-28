@@ -236,9 +236,18 @@ def torus(name, loc, major, minor, m, rot=(0, 0, 0), scale=(1, 1, 1), seg=None, 
     bm.to_mesh(me)
     bm.free()
     o = toykit._obj(name, me, m, loc)
-    o.rotation_euler = rot
+    if isinstance(rot, Quaternion):
+        o.rotation_mode = "QUATERNION"
+        o.rotation_quaternion = rot
+    else:
+        o.rotation_euler = rot
     o.scale = scale
     return o
+
+
+def aim(d, twist=0.0):
+    """Quaternion taking local +Z onto direction d (then twisted about it)."""
+    return Vector((0, 0, 1)).rotation_difference(Vector(d).normalized()) @ Quaternion((0, 0, 1), twist)
 
 
 def eye(name, center, radii, direction, w, h, black, white, depth=0.02, seg=12, shine2=True):

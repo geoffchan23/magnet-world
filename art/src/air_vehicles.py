@@ -70,7 +70,7 @@ def common_mats():
         RUBBER=mat("Rubber", "1c1c1e", 0.82),
         BLACK=mat("Black", "151517", 0.5),
         RUST=mat("Rust", "6b2c12", 0.92, metal=0.15),
-        GLASS=mat("Glass", "cfe9ff", 0.04, alpha=0.22),
+        GLASS=mat("Glass", "cfe9ff", 0.04, alpha=0.14),
     )
 
 
@@ -682,10 +682,11 @@ def render_setup(samples):
         floor.is_shadow_catcher = True
 
 
-def shoot(path, objs, direction=(2.55, -3.25, 1.75), lens=57, samples=96, fill=0.86, aim_z=None):
+def shoot(path, objs, direction=(2.55, -3.25, 1.75), lens=57, samples=96, fill=0.86, aim_z=None, res=512):
     """Frame the given objects from a direction and render to path."""
     render_setup(samples)
     scn = bpy.context.scene
+    scn.render.resolution_x = scn.render.resolution_y = res
     pts = []
     dg = bpy.context.evaluated_depsgraph_get()
     for o in objs:
@@ -753,7 +754,7 @@ def finish(name, objs, seat, stand=False, thumb_dir=(2.55, -3.25, 1.75), checks=
         views = [("front", (2.55, -3.25, 1.75)), ("back", (-2.2, 3.2, 2.2)), ("side", (4, 0.001, 0.6)),
                  ("top", (0.6, 1.2, 4))] + list(checks)
         for tag, d in views:
-            shoot(os.path.join(CHECK, "%s_%s.png" % (name, tag)), objs + pilot, direction=d, samples=24)
+            shoot(os.path.join(CHECK, "%s_%s.png" % (name, tag)), objs + pilot, direction=d, samples=24, res=900)
 
 
 # =================================================================== PLANE
@@ -1033,11 +1034,11 @@ def sgnpow(v, e):
 
 def build_helicopter():
     C = common_mats()
-    PAINT = mat("Paint", "f4b41e", 0.3, coat=0.6)
-    RED = mat("Red", "d83a2c", 0.32, coat=0.55)
+    PAINT = mat("Paint", "f7a800", 0.3, coat=0.6)
+    RED = mat("Red", "d42a1e", 0.32, coat=0.55)
     WHITE = mat("White", "f4f1ea", 0.32, coat=0.5)
     TRIM = mat("Trim", "2b2d33", 0.4, coat=0.3)
-    INTERIOR = mat("Interior", "5d6168", 0.7)
+    INTERIOR = mat("Interior", "3c414b", 0.7)
     SEATM = mat("SeatFabric", "34495e", 0.6, coat=0.1)
     WINDOW = mat("Window", "1d2f45", 0.06, coat=0.8)
     LAMP = mat("Lamp", "fff1c9", 0.05, emit="ffd98a", emit_strength=3.0)
@@ -1119,7 +1120,7 @@ def build_helicopter():
     gys = [y for y in ys if y <= Y_GLASS + 1e-6]
     left = [hring(y)[0] for y in gys]
     right = [hring(y)[NU] for y in gys]
-    tube("FrameSill", right[::-1] + [NOSE + Vector((0, 0.005, 0))] + left, 0.024, TRIM, sides=6, rad=0)
+    tube("FrameSill", right[::-1] + [NOSE + Vector((0, 0.005, 0))] + left, 0.024, TRIM, sides=5, rad=0)
     tube("FrameHoop", hring(Y_GLASS)[:NU + 1], 0.03, TRIM, sides=6, rad=0)
     tube("FrameBar", [hring(y)[NU // 2] for y in gys if y > -0.88], 0.018, TRIM, sides=6, rad=0)
     yd = -0.06
@@ -1215,10 +1216,10 @@ def build_helicopter():
     for s in (-1, 1):
         sk = [(s * 0.44, 0.62, 0.05), (s * 0.44, 0.58, 0.035), (s * 0.44, -0.62, 0.035), (s * 0.44, -0.8, 0.07),
               (s * 0.43, -0.86, 0.17)]
-        tube("Skid", sk, 0.035, METAL, sides=8, rad=0.12, n=4)
+        tube("Skid", sk, 0.035, METAL, sides=7, rad=0.12, n=3)
         for y in (-0.38, 0.32):
             tube("Cross", [(s * 0.44, y, 0.04), (s * 0.43, y, 0.2), (s * 0.3, y, 0.3), (s * 0.1, y, 0.31)], 0.028, METAL,
-                 sides=8, rad=0.1, n=3)
+                 sides=6, rad=0.1, n=2)
         box("Step", (s * 0.44, 0.0, 0.08), (0.06, 0.24, 0.03), BLACK, bevel=0.006, seg=1)
         cyl("StepPost", (s * 0.44, 0.0, 0.04), (s * 0.44, 0.0, 0.08), 0.015, METAL, seg=6)
 
@@ -1240,7 +1241,7 @@ def build_helicopter():
         tg = Z.cross(rd).normalized()
         box("Grip", HUB + rd * 0.13, (0.18, 0.07, 0.05), CHROME, bevel=0.012, seg=1, rot=(0, 0, math.degrees(a)))
         secs = []
-        for r, w in ((0.17, 0.08), (0.25, 0.13), (1.2, 0.13), (1.27, 0.12), (1.3, 0.08)):
+        for r, w in ((0.17, 0.09), (0.26, 0.15), (1.2, 0.15), (1.27, 0.14), (1.3, 0.09)):
             th = math.radians(5)
             cdir = -tg * math.cos(th) - Z * math.sin(th)
             tdir = -tg * math.sin(th) + Z * math.cos(th)

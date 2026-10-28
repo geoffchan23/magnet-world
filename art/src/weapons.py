@@ -329,6 +329,13 @@ def hazard(seg, a=1, b=0):
 
 def collapse(name):
     global PARTS
+    if os.environ.get("WEAPON_TRIS"):
+        dg = bpy.context.evaluated_depsgraph_get()
+        acc = {}
+        for o in PARTS:
+            k = o.name.split(".")[0]
+            acc[k] = acc.get(k, 0) + sum(len(p.vertices) - 2 for p in o.evaluated_get(dg).data.polygons)
+        print("TRIS", name, sorted(acc.items(), key=lambda kv: -kv[1]))
     bpy.ops.object.select_all(action="DESELECT")
     for o in PARTS:
         o.select_set(True)
@@ -358,12 +365,12 @@ def pistol_grip(top_z=0.034, color=DARK, cap=YELLOW, guard=True):
     box("Grip", (0, 0.004, -0.004), (0.026, 0.033, 0.078), color, bevel=0.009, seg=2, rot=(15, 0, 0))
     # finger bumps on the front
     for z in (-0.022, -0.006, 0.010):
-        sphere("Finger", (0, -0.012 - z * 0.27, z), 0.0075, color, scale=(1.55, 0.75, 1.0), useg=8, vseg=6)
+        sphere("Finger", (0, -0.012 - z * 0.27, z), 0.0075, color, scale=(1.55, 0.75, 1.0), useg=8, vseg=4)
     # side grip panels
     for sx in (-1, 1):
         box("GripPanel", (sx * 0.0128, 0.005, -0.004), (0.003, 0.022, 0.052), cap, bevel=0.0012, seg=1, rot=(15, 0, 0))
-    box("GripCap", (0, 0.016, -0.043), (0.029, 0.038, 0.01), cap, bevel=0.004, seg=2, rot=(15, 0, 0))
-    box("Trigger", (0, -0.027, 0.018), (0.007, 0.006, 0.017), YELLOW, bevel=0.0025, seg=2, rot=(-14, 0, 0))
+    box("GripCap", (0, 0.016, -0.043), (0.029, 0.038, 0.01), cap, bevel=0.004, seg=1, rot=(15, 0, 0))
+    box("Trigger", (0, -0.027, 0.018), (0.007, 0.006, 0.017), YELLOW, bevel=0.0025, seg=1, rot=(-14, 0, 0))
     if guard:
         sweep("Guard", [(0, -0.008, top_z - 0.004), (0, -0.044, top_z - 0.004), (0, -0.046, 0.004), (0, -0.024, -0.004),
                         (0, -0.012, 0.0)], lambda s: (0.0042, 0.0032), color, sides=6, rad=0.01, n=3)
@@ -448,14 +455,12 @@ def build_blaster():
         for y in (0.022, -0.03):
             bolt((sx * 0.023, y, 0.057), (sx, 0, 0), r=0.003)
         box("GlowStrip", (sx * 0.0232, -0.004, 0.057), (0.0012, 0.034, 0.0045), CYAN, bevel=0.0005, seg=1)
-        box("Vent", (sx * 0.0225, 0.04, 0.05), (0.003, 0.012, 0.004), YELLOW, bevel=0.001, seg=1)
-        box("Vent", (sx * 0.0225, 0.04, 0.059), (0.003, 0.012, 0.004), YELLOW, bevel=0.001, seg=1)
     # barrel with cooling fins and a glowing muzzle
     BZ = 0.058
     lathe("Barrel", [(0, 0.0168, 0), (0.1, 0.0168, 0)], [DKSTEEL], p0=(0, -0.066, BZ), axis=(0, -1, 0), seg=16, caps=(None, None))
     for t in (0.022, 0.038, 0.054):
         lathe("Fin", [(0, 0.017, 0), (0.0, 0.0245, 0), (0.008, 0.0245, 0), (0.008, 0.017, 0)], [YELLOW],
-              p0=(0, -0.066 - t, BZ), axis=(0, -1, 0), seg=16, caps=(None, None))
+              p0=(0, -0.066 - t, BZ), axis=(0, -1, 0), seg=14, caps=(None, None))
     lathe("Muzzle", [(0.0, 0.0175, 0), (0.016, 0.0255, 0), (0.026, 0.0255, 0), (0.029, 0.0225, 0),
                      (0.029, 0.0135, 1), (0.024, 0.0125, 1)],
           [ORANGE, DARK, CYAN], p0=(0, -0.149, BZ), axis=(0, -1, 0), seg=16, caps=(None, 2))
@@ -572,8 +577,8 @@ def build_launcher():
     lathe("Tube", prof, [ORANGE, OLIVE, YELLOW, BLKTAPE, DARK], p0=(0, 0.2, ZC), axis=(0, -1, 0), seg=seg,
           closed=True, sharp=32)
     # rear bell rim ring
-    tape((0, 0.07, ZC), (0, -1, 0), R, 0.016, tilt=7, seg=20)
-    tape((0, -0.06, ZC), (0, -1, 0), R, 0.013, tilt=-6, seg=20)
+    tape((0, 0.07, ZC), (0, -1, 0), R, 0.016, tilt=7, seg=18)
+    tape((0, -0.06, ZC), (0, -1, 0), R, 0.013, tilt=-6, seg=18)
     for y, sx in ((0.07, 1), (-0.06, -1)):
         bolt((sx * 0.0293, y, ZC + 0.0293), (sx, 0, 1), r=0.0042)
     # grips and mounts
@@ -584,7 +589,7 @@ def build_launcher():
     box("ShoulderPad", (0, 0.11, 0.036), (0.048, 0.09, 0.02), DARK, bevel=0.007, seg=2)
     # sight on the upper left
     box("SightBase", (-0.03, -0.05, ZC + 0.03), (0.012, 0.03, 0.012), DARK, bevel=0.002, seg=1, rot=(0, -40, 0))
-    box("Sight", (-0.036, -0.05, ZC + 0.04), (0.02, 0.048, 0.02), YELLOW, bevel=0.005, seg=2)
+    box("Sight", (-0.036, -0.05, ZC + 0.04), (0.02, 0.048, 0.02), YELLOW, bevel=0.005, seg=1)
     lathe("Lens", [(0, 0.0072, 0), (0.003, 0.0072, 0)], [DARK, CYAN], p0=(-0.036, -0.026, ZC + 0.04), axis=(0, 1, 0), seg=10, caps=(None, 1))
     lathe("Lens", [(0, 0.0072, 0), (0.003, 0.0072, 0)], [DARK, CYAN], p0=(-0.036, -0.074, ZC + 0.04), axis=(0, -1, 0), seg=10, caps=(None, 1))
     return collapse("RocketLauncher"), Vector((0, -0.203, ZC))

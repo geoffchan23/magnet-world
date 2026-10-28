@@ -141,7 +141,7 @@ def shaped_box(name, corner_fn, m, bevel=0.02, seg=2, angle=30):
     return finish_obj(name, bm, m, bevel=bevel, seg=seg, angle=angle)
 
 
-def box(name, c, size, m, bevel=0.015, seg=2, rot=None):
+def box(name, c, size, m, bevel=0.015, seg=1, rot=None):
     c, h = Vector(c), Vector(size) / 2
     q = Euler([math.radians(a) for a in rot]).to_matrix() if rot else None
 
@@ -151,7 +151,7 @@ def box(name, c, size, m, bevel=0.015, seg=2, rot=None):
     return shaped_box(name, fn, m, bevel, seg)
 
 
-def bbox(name, lo, hi, m, bevel=0.015, seg=2):
+def bbox(name, lo, hi, m, bevel=0.015, seg=1):
     """Axis-aligned box from two corners."""
     lo, hi = Vector(lo), Vector(hi)
     return box(name, (lo + hi) / 2, hi - lo, m, bevel=bevel, seg=seg)
@@ -283,7 +283,7 @@ def bolt(c, normal, r=0.011, m=None, seg=4):
     return cyl("Bolt", c - normal * 0.004, c + normal * 0.009, r, m or CHROME, seg=seg, caps=(False, True), r1=r * 0.8)
 
 
-def prism(name, pts, x0, x1, m, bevel=0.02, seg=2, angle=30):
+def prism(name, pts, x0, x1, m, bevel=0.02, seg=2, angle=30, smooth=True):
     """Side profile [(y, z), ...] extruded across X from x0 to x1 (concave outlines are fine)."""
     bm = bmesh.new()
     A = [bm.verts.new((x0, y, z)) for y, z in pts]
@@ -295,10 +295,10 @@ def prism(name, pts, x0, x1, m, bevel=0.02, seg=2, angle=30):
         j = (i + 1) % n
         bm.faces.new([A[i], A[j], B[j], B[i]])
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    return finish_obj(name, bm, m, bevel=bevel, seg=seg, angle=angle)
+    return finish_obj(name, bm, m, smooth=smooth, bevel=bevel, seg=seg, angle=angle)
 
 
-def xprism(name, pts, y0, y1, m, bevel=0.02, seg=2, angle=30):
+def xprism(name, pts, y0, y1, m, bevel=0.02, seg=2, angle=30, smooth=True):
     """Front profile [(x, z), ...] extruded along Y from y0 to y1."""
     bm = bmesh.new()
     A = [bm.verts.new((x, y0, z)) for x, z in pts]
@@ -310,7 +310,7 @@ def xprism(name, pts, y0, y1, m, bevel=0.02, seg=2, angle=30):
         j = (i + 1) % n
         bm.faces.new([A[i], A[j], B[j], B[i]])
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    return finish_obj(name, bm, m, bevel=bevel, seg=seg, angle=angle)
+    return finish_obj(name, bm, m, smooth=smooth, bevel=bevel, seg=seg, angle=angle)
 
 
 def loft(name, sections, m, bevel=0.0, seg=2, angle=30, caps=True, smooth=True):
@@ -453,7 +453,7 @@ def collapse(name, group, origin=None):
         for o in group.parts:
             k = o.name.split(".")[0]
             acc[k] = acc.get(k, 0) + sum(len(p.vertices) - 2 for p in o.evaluated_get(dg).data.polygons)
-        print("TRIS", name, sorted(acc.items(), key=lambda kv: -kv[1])[:25])
+        print("TRIS", name, sorted(acc.items(), key=lambda kv: -kv[1]))
     bpy.ops.object.select_all(action="DESELECT")
     for o in group.parts:
         o.select_set(True)
@@ -499,16 +499,15 @@ def tyre(name, R, W, rim_r, steps=18, tread="road", depth=0.014, m=None, grooves
     w = W / 2
     Rc = R - (depth if tread in ("blocks", "knobs", "monster") else 0.0)
     sh = Rc - rim_r
-    side = [(-0.86 * w, rim_r), (-w, rim_r + sh * 0.45), (-0.95 * w, Rc - sh * 0.16), (-0.72 * w, Rc - 0.006)]
+    side = [(-0.86 * w, rim_r), (-w, rim_r + sh * 0.5), (-0.9 * w, Rc - sh * 0.1)]
     crown = []
     if tread == "road":
-        # circumferential grooves cut straight into the profile
-        gs = [(-0.34, 0.0), (0.34, 0.0)] if grooves == 2 else [(-0.42, 0), (0.0, 0), (0.42, 0)]
-        crown.append((-0.6 * w, Rc))
-        for g, _ in gs:
-            crown += [((g - 0.07) * w, Rc), ((g - 0.045) * w, Rc - depth), ((g + 0.045) * w, Rc - depth),
-                      ((g + 0.07) * w, Rc)]
-        crown.append((0.6 * w, Rc))
+        # circumferential V-grooves cut straight into the profile
+        gs = [-0.3, 0.3] if grooves == 2 else [-0.42, 0.0, 0.42]
+        crown.append((-0.62 * w, Rc))
+        for g in gs:
+            crown += [((g - 0.07) * w, Rc), (g * w, Rc - depth), ((g + 0.07) * w, Rc)]
+        crown.append((0.62 * w, Rc))
     elif tread == "slick":
         crown = [(-0.55 * w, Rc), (0.0, Rc + 0.002), (0.55 * w, Rc)]
     else:
@@ -638,7 +637,7 @@ def place_wheels(specs, **kw):
 def build_steering(hub, axis, R=0.075, rim_m=None, spoke_m=None, spokes=3):
     new_group()
     bm = bmesh.new()
-    r, seg_a, seg_b = 0.013 * R / 0.075, 14, 5
+    r, seg_a, seg_b = 0.013 * R / 0.075, 12, 4
     rows = []
     for i in range(seg_a):
         a = 2 * pi * i / seg_a
@@ -925,7 +924,7 @@ def add_figure(seat_loc):
     bpy.context.view_layer.update()
     for o in new:
         for part, ang in (("LegL", -1.45), ("LegR", -1.45), ("ArmL", -1.2), ("ArmR", -1.2)):
-            if o.name.startswith(part):
+            if o.name.replace("_", "").startswith(part):
                 p = o.matrix_world.translation.copy()
                 o.matrix_world = Matrix.Translation(p) @ Matrix.Rotation(ang, 4, "X") @ Matrix.Translation(-p) @ o.matrix_world
     return [o for o in new if o.type == "MESH"]
