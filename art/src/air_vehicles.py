@@ -1026,8 +1026,253 @@ def build_plane():
     objs = [body, prop, aileron_l, aileron_r, elevator, rudder, seat]
     finish("plane", objs, SEAT)
 
+# =================================================================== HELICOPTER
+def sgnpow(v, e):
+    return math.copysign(abs(v) ** e, v)
 
-BUILDERS = {"plane": build_plane}
+
+def build_helicopter():
+    C = common_mats()
+    PAINT = mat("Paint", "f4b41e", 0.3, coat=0.6)
+    RED = mat("Red", "d83a2c", 0.32, coat=0.55)
+    WHITE = mat("White", "f4f1ea", 0.32, coat=0.5)
+    TRIM = mat("Trim", "2b2d33", 0.4, coat=0.3)
+    INTERIOR = mat("Interior", "5d6168", 0.7)
+    SEATM = mat("SeatFabric", "34495e", 0.6, coat=0.1)
+    WINDOW = mat("Window", "1d2f45", 0.06, coat=0.8)
+    LAMP = mat("Lamp", "fff1c9", 0.05, emit="ffd98a", emit_strength=3.0)
+    BEACON = mat("Beacon", "ff3a2a", 0.15, emit="ff2a1a", emit_strength=4.0)
+    CHROME, METAL, RUBBER, BLACK, GLASS = C["CHROME"], C["METAL"], C["RUBBER"], C["BLACK"], C["GLASS"]
+
+    SEAT = Vector((0.0, -0.3, 0.47))
+    HUB = Vector((0.0, 0.25, 1.37))
+    TR_HUB = Vector((0.115, 1.97, 1.04))
+    Y_GLASS = 0.06
+    HELI = [(-0.95, 0.585, 0.12, 0.13, 2.0),
+            (-0.88, 0.605, 0.28, 0.30, 2.2),
+            (-0.72, 0.635, 0.37, 0.385, 2.4),
+            (-0.45, 0.66, 0.415, 0.42, 2.6),
+            (-0.10, 0.67, 0.43, 0.43, 2.8),
+            (0.25, 0.68, 0.425, 0.42, 2.8),
+            (0.50, 0.70, 0.37, 0.37, 2.6),
+            (0.72, 0.76, 0.24, 0.26, 2.3),
+            (0.90, 0.80, 0.15, 0.165, 2.1),
+            (1.30, 0.835, 0.11, 0.12, 2.0),
+            (1.70, 0.865, 0.085, 0.095, 2.0),
+            (2.02, 0.885, 0.07, 0.075, 2.0)]
+    NU, NL = 10, 14
+
+    def zline(y):
+        return 0.60 if y > -0.55 else 0.60 - 0.2 * ((-0.55 - y) / 0.4) ** 1.4
+
+    def hring(y, inset=0.0):
+        zc, a, b, n = crom(HELI, y)
+        a, b = a - inset, b - inset
+        sv = max(-0.95, min(0.95, (zline(y) - zc) / b))
+        tl = math.asin(sgnpow(sv, n / 2))
+        ts = [tl + (math.pi - 2 * tl) * k / NU for k in range(NU)] + \
+             [math.pi - tl + (math.pi + 2 * tl) * k / NL for k in range(NL)]
+        return [Vector((a * sgnpow(math.cos(t), 2 / n), y, zc + b * sgnpow(math.sin(t), 2 / n))) for t in ts]
+
+    ys = [-0.92 + 0.065 * i for i in range(26)]
+    ys = [y for y in ys if y < 0.72]
+    ys = sorted(set([round(y, 4) for y in ys] + [Y_GLASS]))
+    ys += [0.85, 1.0, 1.2, 1.45, 1.7, 1.9, 2.02]
+    NOSE = Vector((0, -0.975, 0.58))
+    TAIL = Vector((0, 2.06, 0.885))
+
+    def shell(name, inset, keep, m_list, glass_fn, flip=False, sel_y=None):
+        bm = bmesh.new()
+        sel = [y for y in ys if sel_y is None or sel_y[0] <= y <= sel_y[1]]
+        rings = [[bm.verts.new(p) for p in hring(y, inset)] for y in sel]
+        n = NU + NL
+        if inset == 0:
+            pole0, pole1 = bm.verts.new(NOSE), bm.verts.new(TAIL)
+            for i in range(n):
+                j = (i + 1) % n
+                f = bm.faces.new([pole0, rings[0][j], rings[0][i]])
+                f.material_index = glass_fn(sel[0], sel[0], i)
+                f = bm.faces.new([pole1, rings[-1][i], rings[-1][j]])
+        for k, (A, B) in enumerate(zip(rings, rings[1:])):
+            for i in range(n):
+                j = (i + 1) % n
+                if not keep(sel[k], sel[k + 1], i):
+                    continue
+                f = bm.faces.new([A[i], A[j], B[j], B[i]])
+                f.material_index = glass_fn(sel[k], sel[k + 1], i)
+        bm.normal_update()
+        # outward check: the face at the top of the cabin should point up
+        top = max(bm.faces, key=lambda f: f.calc_center_median().z)
+        if (top.normal.z < 0) != flip:
+            bmesh.ops.reverse_faces(bm, faces=list(bm.faces))
+        return finish_obj(name, bm, m_list, smooth=True)
+
+    is_glass = lambda y0, y1, i: 1 if (y1 <= Y_GLASS + 1e-6 and i < NU) else 0
+    new_group()
+    hull = shell("Hull", 0.0, lambda *a: True, [PAINT, GLASS], is_glass)
+    shell("Lining", 0.03, lambda y0, y1, i: not is_glass(y0, y1, i), [INTERIOR], lambda *a: 0, flip=True,
+          sel_y=(-0.86, 0.5))
+    zc, a, b, n = crom(HELI, 0.5)
+    loft("Bulkhead", [hring(0.5, 0.03)], INTERIOR, cap0=True, cap1=False, flip=False)
+
+    # canopy frame: sills, rear hoop, centre bar, door hoop
+    gys = [y for y in ys if y <= Y_GLASS + 1e-6]
+    left = [hring(y)[0] for y in gys]
+    right = [hring(y)[NU] for y in gys]
+    tube("FrameSill", right[::-1] + [NOSE + Vector((0, 0.005, 0))] + left, 0.024, TRIM, sides=6, rad=0)
+    tube("FrameHoop", hring(Y_GLASS)[:NU + 1], 0.03, TRIM, sides=6, rad=0)
+    tube("FrameBar", [hring(y)[NU // 2] for y in gys if y > -0.88], 0.018, TRIM, sides=6, rad=0)
+    yd = -0.06
+    tube("FrameDoor", hring(yd)[:NU + 1], 0.02, TRIM, sides=6, rad=0)
+
+    # cabin floor, pilot seat, console, cyclic, first-aid kit
+    box("Floor", (0, -0.2, 0.3), (0.62, 1.2, 0.04), INTERIOR, bevel=0.0)
+    box("Cushion", (0, SEAT.y + 0.02, SEAT.z - 0.035), (0.32, 0.28, 0.07), SEATM, bevel=0.025, seg=2)
+    box("SeatBack", (0, SEAT.y + 0.19, SEAT.z + 0.13), (0.34, 0.07, 0.3), SEATM, bevel=0.03, seg=2, rot=(-10, 0, 0))
+    box("SeatBase", (0, SEAT.y + 0.04, 0.37), (0.24, 0.22, 0.14), METAL, bevel=0.01, seg=1)
+    box("Console", (0, -0.74, 0.5), (0.4, 0.16, 0.16), TRIM, bevel=0.03, seg=2, rot=(25, 0, 0))
+    for gx in (-0.11, 0.0, 0.11):
+        q = Euler((math.radians(25), 0, 0)).to_matrix()
+        nrm = q @ Vector((0, 0, 1))
+        c = Vector((gx, -0.74, 0.5)) + nrm * 0.082
+        ring("Gauge", c, nrm, 0.022, 0.03, 0.01, CHROME, seg=10, sides=(0, 1, 2))
+        disc("GaugeFace", c + nrm * 0.001, nrm, 0.024, WHITE, seg=10)
+    cyl("Cyclic", (0, SEAT.y - 0.14, 0.32), (0, SEAT.y - 0.22, 0.56), 0.012, BLACK, seg=6)
+    blob("Grip", (0, SEAT.y - 0.225, 0.57), (0.02, 0.02, 0.035), BLACK, seg=8, rings=5)
+    box("AidKit", (0.0, 0.25, 0.39), (0.26, 0.16, 0.14), WHITE, bevel=0.02, seg=2)
+    box("AidCrossA", (0.0, 0.25, 0.462), (0.12, 0.04, 0.006), RED, bevel=0.0)
+    box("AidCrossB", (0.0, 0.25, 0.462), (0.04, 0.12, 0.006), RED, bevel=0.0)
+
+    # engine cowling on the roof, intakes, exhausts, mast, beacon
+    hsecs = []
+    for y, k in ((0.07, 0.55), (0.12, 0.9), (0.22, 1.0), (0.5, 1.0), (0.66, 0.85), (0.72, 0.45)):
+        hsecs.append(se_pts((0, y, 1.04), X, Z, 0.25 * k, 0.15 * (0.6 + 0.4 * k), 3.2, 20))
+    hump = loft("Cowling", hsecs, PAINT)
+    smooth_by_angle(hump, 50)
+    for s in (-1, 1):
+        decal("Intake", hump, (s * 2, 0.2, 1.08), (-s, 0, 0), TRIM, rect_shape(0.14, 0.09, 3, 2), up=Z, lift=0.004)
+        for k in range(4):
+            decal("Louvre", hump, (s * 2, 0.36 + k * 0.05, 1.07), (-s, 0, 0), BLACK, rect_shape(0.018, 0.08, 1, 2),
+                  up=Z, lift=0.004)
+        tube("ExhaustPipe", [(s * 0.14, 0.6, 1.1), (s * 0.2, 0.72, 1.12), (s * 0.26, 0.8, 1.16)], 0.035, METAL, sides=8,
+             rad=0.05, n=2)
+        cyl("ExhaustTip", (s * 0.25, 0.79, 1.155), (s * 0.27, 0.82, 1.17), 0.038, BLACK, seg=8)
+    cyl("Mast", (0, HUB.y, 1.15), (0, HUB.y, HUB.z - 0.05), 0.05, METAL, seg=10)
+    cyl("Swash", (0, HUB.y, 1.24), (0, HUB.y, 1.27), 0.095, CHROME, seg=14)
+    blob("BeaconLamp", (0, 0.66, 1.17), (0.04, 0.04, 0.035), BEACON, seg=10, rings=5)
+
+    # searchlight under the nose, steps, door, winch hoist (right side)
+    cyl("SearchMount", (0, -0.7, 0.28), (0, -0.7, 0.22), 0.03, METAL, seg=8)
+    cyl("SearchBody", (0, -0.66, 0.2), (0, -0.8, 0.17), 0.06, CHROME, seg=12, r1=0.07)
+    disc("SearchLens", (0, -0.802, 0.169), (0, -1, -0.2), 0.062, LAMP, seg=12)
+    for s in (-1, 1):
+        decal("Window", hull, (s * 2, 0.27, 0.84), (-s, 0, 0), WINDOW, rect_shape(0.26, 0.17, 4, 2), up=Z, lift=0.004)
+        for (w, h, cx, cy) in ((0.44, 0.012, 0.0, 0.2), (0.44, 0.012, 0.0, -0.3), (0.012, 0.5, 0.22, -0.05),
+                               (0.012, 0.5, -0.22, -0.05)):
+            decal("DoorLine", hull, (s * 2, 0.27, 0.71), (-s, 0, 0), TRIM, rect_shape(w, h, 6 if w > h else 1, 1 if w > h else 6, cx, cy),
+                  up=Z, lift=0.003)
+        decal("CrossDisc", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), WHITE, disc_shape(0.1, 18, 0, 2), up=Z)
+        decal("CrossA", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), RED, rect_shape(0.13, 0.04, 4, 1), up=Z, lift=0.007)
+        decal("CrossB", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), RED, rect_shape(0.04, 0.13, 1, 4), up=Z, lift=0.007)
+        decal("Stripe", hull, (s * 2, -0.25, 0.52), (-s, 0, 0), RED, rect_shape(1.25, 0.07, 14, 1, cx=0.12), up=Z)
+        tube("DoorRail", [(s * 0.405, 0.04, 1.02), (s * 0.4, 0.55, 1.0)], 0.012, CHROME, sides=5, rad=0)
+    hoist = [(-0.3, 0.18, 1.05), (-0.48, 0.18, 1.1), (-0.58, 0.18, 1.06)]
+    tube("HoistArm", hoist, 0.03, WHITE, sides=8, rad=0.06, n=2)
+    cyl("HoistDrum", (-0.6, 0.18, 1.08), (-0.6, 0.18, 0.98), 0.045, RED, seg=10)
+    cyl("Cable", (-0.6, 0.18, 0.98), (-0.6, 0.18, 0.62), 0.006, BLACK, seg=4)
+    tube("Hook", [(-0.6, 0.18, 0.62), (-0.6, 0.18, 0.57), (-0.6, 0.15, 0.54), (-0.6, 0.13, 0.57)], 0.011, CHROME, sides=5,
+         rad=0.02, n=2)
+
+    # tail: bands, horizontal stabiliser with end plates, fin, ventral fin, gearbox
+    for y0, y1, m in ((1.36, 1.44, WHITE), (1.52, 1.6, WHITE), (1.92, 2.02, RED)):
+        secs = []
+        for y in (y0, y1):
+            zc, a, b, n = crom(HELI, y)
+            secs.append(se_pts((0, y, zc), X, Z, a + 0.004, b + 0.004, n, 16))
+        loft("Band", secs, m, cap0=False, cap1=False)
+    zt = crom(HELI, 1.62)[0]
+    st = [(0.36, 0.4), (0.33, 1.0), (-0.33, 1.0), (-0.36, 0.4)]
+    loft("Stab", [foil((x, 1.56 + 0.06 * (1 - k), zt), Y, Z, 0.16 * k, 0.14, N=5) for x, k in st], RED)
+    for s in (-1, 1):
+        loft("EndPlate", [foil((s * 0.345, 1.55, z), Y, X, 0.17 * k, 0.12, N=5) for z, k in
+                          ((zt - 0.1, 0.5), (zt - 0.07, 1.0), (zt + 0.08, 1.0), (zt + 0.11, 0.5))], RED)
+
+    def fin_sec(z, k=1.0):
+        le = 1.80 + 0.2 * max(0.0, (z - 0.85)) / 0.45
+        te = 2.08 + 0.06 * max(0.0, (z - 0.85)) / 0.45
+        ch = (te - le) * k
+        return foil((0, le + (te - le) * (1 - k) / 2, z), Y, X, ch, 0.14, N=6)
+
+    fin = loft("Fin", [fin_sec(z, k) for z, k in ((0.82, 1.0), (1.25, 1.0), (1.3, 0.75), (1.32, 0.35))], [PAINT, RED],
+               mat_fn=lambda p: 1 if p.center.z > 1.16 else 0)
+    smooth_by_angle(fin, 50)
+    loft("Ventral", [foil((0, 1.9 + 0.04 * k, z), Y, X, 0.16 * k, 0.14, N=5) for z, k in ((0.86, 1.0), (0.66, 0.9), (0.62, 0.4))],
+         RED)
+    blob("GearBox", TR_HUB - X * 0.06, (0.05, 0.07, 0.07), METAL, seg=10, rings=6)
+    blob("TailLamp", (0, 2.07, 0.885), 0.025, BEACON, seg=8, rings=4)
+
+    # skids + cross tubes, with step pads
+    for s in (-1, 1):
+        sk = [(s * 0.44, 0.62, 0.05), (s * 0.44, 0.58, 0.035), (s * 0.44, -0.62, 0.035), (s * 0.44, -0.8, 0.07),
+              (s * 0.43, -0.86, 0.17)]
+        tube("Skid", sk, 0.035, METAL, sides=8, rad=0.12, n=4)
+        for y in (-0.38, 0.32):
+            tube("Cross", [(s * 0.44, y, 0.04), (s * 0.43, y, 0.2), (s * 0.3, y, 0.3), (s * 0.1, y, 0.31)], 0.028, METAL,
+                 sides=8, rad=0.1, n=3)
+        box("Step", (s * 0.44, 0.0, 0.08), (0.06, 0.24, 0.03), BLACK, bevel=0.006, seg=1)
+        cyl("StepPost", (s * 0.44, 0.0, 0.04), (s * 0.44, 0.0, 0.08), 0.015, METAL, seg=6)
+
+    # wear
+    for o, d, sz, asp, spin in [((2, -0.1, 0.42), (-1, 0, 0), 0.045, 1.6, 0.2), ((-2, 0.55, 0.62), (1, 0, 0), 0.05, 1.4, -0.3),
+                                ((2, 1.15, 0.8), (-1, 0, 0), 0.03, 1.8, 0.1), ((-2, 0.05, 0.45), (1, 0, 0), 0.04, 1.5, 0.5)]:
+        rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(10)]
+        decal("Rust", hull, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 10) * rr[i] * asp,
+                                                math.sin(2 * math.pi * i / 10) * rr[i]) for i in range(10)]], spin=spin)
+    body = collapse("Body", GROUP)
+
+    # main rotor: hub + four blades (grey, red/white tips), origin at the hub
+    new_group()
+    cyl("HubBody", HUB - Z * 0.05, HUB + Z * 0.04, 0.08, METAL, seg=12)
+    blob("HubCap", HUB + Z * 0.04, (0.07, 0.07, 0.05), RED, seg=12, rings=6, squash=lambda z: 1.0 if z < 0 else 1.0)
+    for i in range(4):
+        a = math.pi / 4 + math.pi / 2 * i
+        rd = Vector((math.cos(a), math.sin(a), 0))
+        tg = Z.cross(rd).normalized()
+        box("Grip", HUB + rd * 0.13, (0.18, 0.07, 0.05), CHROME, bevel=0.012, seg=1, rot=(0, 0, math.degrees(a)))
+        secs = []
+        for r, w in ((0.17, 0.08), (0.25, 0.13), (1.2, 0.13), (1.27, 0.12), (1.3, 0.08)):
+            th = math.radians(5)
+            cdir = -tg * math.cos(th) - Z * math.sin(th)
+            tdir = -tg * math.sin(th) + Z * math.cos(th)
+            secs.append(foil(HUB + rd * r - cdir * w * 0.35 - Z * 0.0, cdir, tdir, w, 0.14, N=5))
+        ob = loft("Blade", secs, [TRIM, RED, WHITE],
+                  mat_fn=lambda p, rd=rd: 2 if 1.08 < (p.center - HUB).dot(rd) < 1.17 else (1 if (p.center - HUB).dot(rd) >= 1.17 else 0))
+        smooth_by_angle(ob, 60)
+    rotor = collapse("Rotor", GROUP, loc=HUB)
+
+    # tail rotor: three blades in the YZ plane, spins about X
+    new_group()
+    cyl("TRHub", TR_HUB - X * 0.03, TR_HUB + X * 0.035, 0.035, CHROME, seg=10)
+    blob("TRCap", TR_HUB + X * 0.035, (0.02, 0.03, 0.03), RED, seg=8, rings=4)
+    for i in range(3):
+        a = 2 * math.pi * i / 3 + 0.3
+        rd = Vector((0, math.cos(a), math.sin(a)))
+        tg = X.cross(rd).normalized()
+        secs = []
+        for r, w in ((0.03, 0.05), (0.06, 0.07), (0.22, 0.07), (0.25, 0.05)):
+            th = math.radians(10)
+            cdir = tg * math.cos(th) + X * math.sin(th)
+            tdir = -tg * math.sin(th) + X * math.cos(th)
+            secs.append(foil(TR_HUB + rd * r - cdir * w * 0.4, cdir, tdir, w, 0.16, N=4))
+        loft("TRBlade", secs, [WHITE, RED], mat_fn=lambda p, rd=rd: 1 if (p.center - TR_HUB).dot(rd) > 0.17 else 0)
+    tail_rotor = collapse("TailRotor", GROUP, loc=TR_HUB)
+
+    seat = empty("Seat", SEAT)
+    objs = [body, rotor, tail_rotor, seat]
+    finish("helicopter", objs, SEAT)
+
+
+BUILDERS = {"plane": build_plane, "helicopter": build_helicopter}
 
 
 def reset():

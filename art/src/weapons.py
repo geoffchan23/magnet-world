@@ -57,9 +57,10 @@ def mat(name, color, rough, metal=0.0, coat=0.0, emit=None, emit_strength=0.0):
     return m
 
 
-STEEL = mat("Steel", "b4bfcc", 0.26, metal=0.85)
+STEEL = mat("Steel", "bcc6d2", 0.24, metal=0.75)
 EDGE = mat("SteelEdge", "f4f8fc", 0.12, metal=1.0)
 DKSTEEL = mat("DarkSteel", "59606b", 0.32, metal=0.9)
+HEADSTEEL = mat("HeadSteel", "8d97a6", 0.3, metal=0.8)
 RED = mat("RedPlastic", "e3372c", 0.3, coat=0.7)
 ORANGE = mat("OrangePlastic", "f7821c", 0.3, coat=0.7)
 YELLOW = mat("YellowPlastic", "fac22e", 0.28, coat=0.7)
@@ -446,6 +447,7 @@ def build_blaster():
         box("SidePanel", (sx * 0.0215, -0.004, 0.057), (0.003, 0.064, 0.028), DARK, bevel=0.0012, seg=1)
         for y in (0.022, -0.03):
             bolt((sx * 0.023, y, 0.057), (sx, 0, 0), r=0.003)
+        box("GlowStrip", (sx * 0.0232, -0.004, 0.057), (0.0012, 0.034, 0.0045), CYAN, bevel=0.0005, seg=1)
         box("Vent", (sx * 0.0225, 0.04, 0.05), (0.003, 0.012, 0.004), YELLOW, bevel=0.001, seg=1)
         box("Vent", (sx * 0.0225, 0.04, 0.059), (0.003, 0.012, 0.004), YELLOW, bevel=0.001, seg=1)
     # barrel with cooling fins and a glowing muzzle
@@ -551,12 +553,8 @@ def build_hammer():
     fix = [(0, 0.041, 0), (0.008, 0.0525, 1), (0.026, 0.0525, 1), (0.029, 0.0495, 2), (0.062, 0.0495, 2),
            (0.066, R, hazard(seg, 3, 4)), (H2 - 0.066, R, 2, tw), (H2 - 0.062, 0.0495, 2, tw),
            (H2 - 0.029, 0.0495, 1, tw), (H2 - 0.026, 0.0525, 1, tw), (H2 - 0.008, 0.0525, 0, tw), (H2, 0.041, 0, tw)]
-    lathe("Head", fix, [EDGE, RED, DKSTEEL, YELLOW, BLKTAPE], p0=(0, HY, -HALF), axis=(0, 0, 1), u=(1, 0, 0),
+    lathe("Head", fix, [EDGE, RED, HEADSTEEL, YELLOW, BLKTAPE], p0=(0, HY, -HALF), axis=(0, 0, 1), u=(1, 0, 0),
           seg=seg, caps=(0, 0), sharp=30)
-    # wedge plate + bolts on the head's sides (where the handle goes through)
-    for sx in (-1, 1):
-        box("HeadPlate", (sx * 0.048, HY, 0), (0.006, 0.03, 0.03), DKSTEEL, bevel=0.002, seg=1, rot=(0, 0, 0))
-        bolt((sx * 0.051, HY, 0), (sx, 0, 0), r=0.0055)
     return collapse("Hammer")
 
 
@@ -731,11 +729,11 @@ def icon_setup():
     nt.links.new(sep.outputs["Z"], mapr.inputs["Value"])
     nt.links.new(mapr.outputs["Result"], ramp.inputs["Fac"])
     els = ramp.color_ramp.elements
-    els[0].position, els[0].color = 0.0, (0.06, 0.065, 0.08, 1)
+    els[0].position, els[0].color = 0.0, (0.3, 0.32, 0.36, 1)
     els[1].position, els[1].color = 1.0, (0.85, 0.9, 1.0, 1)
-    e = els.new(0.47); e.color = (0.18, 0.19, 0.22, 1)
-    e = els.new(0.53); e.color = (1.3, 1.3, 1.35, 1)
-    e = els.new(0.62); e.color = (0.55, 0.6, 0.7, 1)
+    e = els.new(0.45); e.color = (0.5, 0.52, 0.56, 1)
+    e = els.new(0.52); e.color = (1.5, 1.5, 1.5, 1)
+    e = els.new(0.6); e.color = (0.7, 0.75, 0.85, 1)
     nt.links.new(ramp.outputs["Color"], bg.inputs["Color"])
     cam_data = bpy.data.cameras.new("IconCam")
     cam_data.type = "ORTHO"

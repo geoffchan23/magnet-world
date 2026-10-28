@@ -1794,6 +1794,12 @@ func setup_ui() -> void:
 		{"id": "ball", "name": "Wrecking Ball", "icon": "res://assets/crane/crane.png"},
 	], func(kind): destroyer.start(kind))
 	setup_help(layer)
+	if DisplayServer.is_touchscreen_available() or "--touch" in OS.get_cmdline_user_args():
+		var touch := Control.new()
+		touch.set_script(preload("res://touch.gd"))
+		touch.main = self
+		layer.add_child(touch)
+		help_visible = false  # the iPad has no keyboard: the keys card would just confuse
 
 	# Explore mode: hearts + stars, a weapon bar and big announcements.
 	hearts_label = Label.new()
