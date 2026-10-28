@@ -30,6 +30,9 @@ var loop_t := 0.0  # plane stunt
 var boost_t := 0.0
 var spin_parts: Array = []  # [node, axis, rest]
 var deer: Array = []  # sleigh: reindeer parts to gallop {node, rest, phase}
+var flaps := {}  # plane control surfaces: name -> rest transform
+var turn_now := 0.0
+var exhaust: CPUParticles3D  # rocket fire
 var model_root: Node3D
 var engine_snd: AudioStreamPlayer3D
 var spawn_xf := Transform3D()
@@ -55,12 +58,17 @@ func setup(at: Transform3D, k: String) -> void:
 	model.queue_free()
 	var seat_node := model_root.find_child("Seat", true, false) as Node3D
 	if seat_node:
-		seat = Transform3D(Basis(), seat_node.position + Vector3(0, -0.094, 0))
+		# Seats mark the cushion top (figures stand on their origin); boards mark the deck.
+		seat = Transform3D(Basis(), seat_node.position + (Vector3.ZERO if spec.get("low", false) else Vector3(0, -0.094, 0)))
 	for n in ["Propeller", "Rotor", "TailRotor"]:
 		var p := model_root.find_child(n, true, false) as Node3D
 		if p:
 			var axis := Vector3.FORWARD if n == "Propeller" else (Vector3.RIGHT if n == "TailRotor" else Vector3.UP)
 			spin_parts.append([p, axis, p.transform])
+	for n in ["AileronL", "AileronR", "Elevator", "Rudder"]:
+		var f := model_root.find_child(n, true, false) as Node3D
+		if f:
+			flaps[f] = f.transform
 	for n in model_root.find_children("Deer*", "", true, false):
 		var node := n as Node3D
 		deer.append({"node": node, "rest": node.transform, "leg": node.name.contains("Leg"), "front": node.name.contains("LegF")})
@@ -82,6 +90,8 @@ func setup(at: Transform3D, k: String) -> void:
 	cs.position = box.get_center() + Vector3(0, box.size.y * 0.1, 0)
 	add_child(cs)
 	set_meta("half_size", shape.size / 2)
+	if style == "rocket":
+		exhaust = make_exhaust()
 	fx = Node3D.new()
 	fx.set_script(preload("res://ride_fx.gd"))
 	fx.main = main
@@ -248,6 +258,27 @@ func _physics_process(delta: float) -> void:
 			(d.node as Node3D).transform = Transform3D(rest.basis, rest.origin + Vector3(0, absf(sin(t * 11.0)) * 0.04 * power, 0))
 	if spec.get("low", false):
 		model_root.position.y = sin(t * 3.0) * 0.03
+	if exhaust:
+		exhaust.emitting = lift > 0.1
+		exhaust.initial_velocity_max = 3.0 + lift * 5.0
+	# Plane flaps follow the stick.
+	turn_now = lerpf(turn_now, turn_in, 6.0 * delta)
+	for f in flaps:
+		var rest: Transform3D = flaps[f]
+		var name: String = (f as Node).name
+		var a := 0.0
+		var axis := Vector3.RIGHT
+		match name:
+			"AileronL":
+				a = turn_now * 0.4
+			"AileronR":
+				a = -turn_now * 0.4
+			"Elevator":
+				a = -up_in * 0.4
+			"Rudder":
+				a = turn_now * 0.4
+				axis = Vector3.UP
+		(f as Node3D).transform = rest * Transform3D(Basis(axis, a), Vector3.ZERO)
 
 	if engine_snd:
 		if driving and not engine_snd.playing:
@@ -274,3 +305,40 @@ func right_side_up() -> void:
 	pitch = 0.0
 	bank = 0.0
 	velocity = Vector3.ZERO
+
+
+func make_exhaust() -> CPUParticles3D:
+	var p := CPUParticles3D.new()
+	p.amount = 200
+	p.lifetime = 0.45
+	p.emitting = false
+	p.local_coords = false
+	p.direction = Vector3.DOWN
+	p.spread = 10.0
+	p.initial_velocity_min = 3.0
+	p.initial_velocity_max = 6.0
+	p.gravity = Vector3.ZERO
+	p.scale_amount_min = 0.8
+	p.scale_amount_max = 1.8
+	var q := QuadMesh.new()
+	q.size = Vector2(0.22, 0.22)
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	m.albedo_texture = Rides.soft_dot()
+	m.vertex_color_use_as_albedo = true
+	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+	q.material = m
+	p.mesh = q
+	var g := Gradient.new()
+	g.set_color(0, Color(1.0, 0.95, 0.6, 1.0))
+	g.add_point(0.35, Color(1.0, 0.5, 0.1, 0.9))
+	g.set_color(g.get_point_count() - 1, Color(0.4, 0.4, 0.4, 0.0))
+	p.color_ramp = g
+	var at := model_root.find_child("Flame", true, false) as Node3D
+	if at:
+		at.add_child(p)
+	else:
+		model_root.add_child(p)
+	return p

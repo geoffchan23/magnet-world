@@ -17,7 +17,6 @@ const RIDES := {
 	"helicopter": {"name": "Helicopter", "type": "fly", "style": "hover", "top": 10.0, "special": "spotlight"},
 	"rocket": {"name": "Rocket Ship", "type": "fly", "style": "rocket", "top": 26.0, "special": "boost"},
 	"hoverboard": {"name": "Hoverboard", "type": "fly", "style": "hover", "top": 9.0, "special": "boost", "low": true},
-	"jetpack": {"name": "Jetpack", "type": "fly", "style": "hover", "top": 9.0, "special": "boost", "low": true},
 }
 
 const SPECIAL_TEXT := {
@@ -94,3 +93,23 @@ static func synth(kind: String) -> AudioStreamWAV:
 		w.loop_mode = AudioStreamWAV.LOOP_FORWARD
 		w.loop_end = n
 	return w
+
+
+static var _dot: GradientTexture2D
+
+
+static func soft_dot() -> GradientTexture2D:
+	# A fuzzy round blob, so particles (fire, water, sparkles) aren't square.
+	if _dot == null:
+		var g := Gradient.new()
+		g.set_color(0, Color(1, 1, 1, 1))
+		g.add_point(0.45, Color(1, 1, 1, 0.75))
+		g.set_color(g.get_point_count() - 1, Color(1, 1, 1, 0))
+		_dot = GradientTexture2D.new()
+		_dot.gradient = g
+		_dot.fill = GradientTexture2D.FILL_RADIAL
+		_dot.fill_from = Vector2(0.5, 0.5)
+		_dot.fill_to = Vector2(1.0, 0.5)
+		_dot.width = 64
+		_dot.height = 64
+	return _dot

@@ -4,6 +4,7 @@ extends Node3D
 ## survivor who needs rescuing, a rat nest, a burning car for the fire truck, a
 ## supply drop...). Things far behind you are cleared away again.
 
+const Rides := preload("res://rides.gd")
 const NPC := preload("res://npc.gd")
 const KEEP := 10  # wandering folk to keep around you
 const NEAR := 16.0  # spawn at least this far away (out of the way)...
@@ -245,6 +246,7 @@ func start_fire(at: Vector3) -> void:
 	var m := StandardMaterial3D.new()
 	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	m.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+	m.albedo_texture = Rides.soft_dot()
 	m.vertex_color_use_as_albedo = true
 	m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	m.blend_mode = BaseMaterial3D.BLEND_MODE_ADD

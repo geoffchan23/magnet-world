@@ -6,6 +6,7 @@ extends Node3D
 ## front so it's easy for small hands. Rockets explode: they knock everything
 ## around flying and will even smash your build.
 
+const Rides := preload("res://rides.gd")
 const WEAPONS := {
 	"fists": {"name": "Fists", "melee": true, "damage": 1, "reach": 0.55, "arc": 1.2, "cooldown": 0.35, "push": 2.0},
 	"sword": {"name": "Sword", "melee": true, "damage": 2, "reach": 0.85, "arc": 1.6, "cooldown": 0.45, "push": 3.0},
@@ -286,6 +287,7 @@ func sparkles(at: Vector3, col: Color, amount := 24, scale := 1.0) -> void:
 		sparkle_mat = StandardMaterial3D.new()
 		sparkle_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 		sparkle_mat.billboard_mode = BaseMaterial3D.BILLBOARD_PARTICLES
+		sparkle_mat.albedo_texture = Rides.soft_dot()
 		sparkle_mat.vertex_color_use_as_albedo = true
 		sparkle_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	q.material = sparkle_mat
