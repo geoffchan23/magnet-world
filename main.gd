@@ -412,7 +412,7 @@ func summon_ride(kind: String) -> void:
 	if not play_mode:
 		set_play(true)
 	var here := player.global_position
-	var fwd: Vector3 = player.facing()
+	var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))  # facing the way you're looking
 	var spot := here + fwd * 2.2
 	var space := get_world_3d().direct_space_state
 	for i in 8:

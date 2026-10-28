@@ -362,7 +362,7 @@ def blob(name, c, r, m, seg=12, rings=7, rot=(0, 0, 0), squash=None, M=None):
     return lathe(name, prof, m, seg=seg, M=Mx)
 
 
-def extrude(name, outline, depth, m, bevel=0.0, seg=2, M=None, angle=30, smooth=False):
+def extrude(name, outline, depth, m, bevel=0.0, seg=2, M=None, angle=30, smooth=False, mat_fn=None):
     """Prism from a 2D outline [(y, z)] in the YZ plane, depth along X (centred)."""
     bm = bmesh.new()
     a = [bm.verts.new((-depth / 2, p[0], p[1])) for p in outline]
@@ -374,7 +374,7 @@ def extrude(name, outline, depth, m, bevel=0.0, seg=2, M=None, angle=30, smooth=
     bm.faces.new(a[::-1])
     bm.faces.new(b)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    return finish_obj(name, bm, m, smooth=smooth, bevel=bevel, seg=seg, M=M, angle=angle)
+    return finish_obj(name, bm, m, smooth=smooth, bevel=bevel, seg=seg, M=M, angle=angle, mat_fn=mat_fn)
 
 
 def bolt(c, normal, r=0.011, m=None):
@@ -592,6 +592,17 @@ def rect_shape(w, h, nu=1, nv=1, cx=0.0, cy=0.0):
     return polys
 
 
+def blot_shape(sz, asp=1.4, n=14):
+    """Organic rust / scuff blot: a wobbly ellipse made of low-frequency sines."""
+    ph = [random.uniform(0, 2 * math.pi) for _ in range(3)]
+    pts = []
+    for i in range(n):
+        a = 2 * math.pi * i / n
+        r = sz * (0.82 + 0.12 * math.sin(2 * a + ph[0]) + 0.08 * math.sin(3 * a + ph[1]) + 0.05 * math.sin(5 * a + ph[2]))
+        pts.append((math.cos(a) * r * asp, math.sin(a) * r))
+    return [pts]
+
+
 def star_shape(r, r_in, points=5):
     pts = []
     for i in range(points * 2):
@@ -644,7 +655,7 @@ def wheel(name, c, r, width, M_rubber, hub_m, cap_m, knobs=True, steps=16, flip=
     """Tyre + dished hub + cap, axle along X, centred on c. flip mirrors the cap to -X."""
     sgn = -1 if flip else 1
     T = Matrix.Translation(Vector(c))
-    tyre(name + "Tyre", r, width, M_rubber, steps=steps, knobs=knobs, M=T)
+    tyre(name + "Tyre", r / 1.085 if knobs else r, width, M_rubber, steps=steps, knobs=knobs, M=T)  # r includes the knobs
     hw = width * 0.42
     disc(name + "Dish", Vector(c) + X * sgn * hw * 0.8, X * sgn, r * 0.64, hub_m, seg=14)
     disc(name + "Back", Vector(c) - X * sgn * hw * 0.8, -X * sgn, r * 0.64, hub_m, seg=10)
@@ -1013,9 +1024,7 @@ def build_plane():
                                 ((2, -0.55, 0.45), (-1, 0, 0), 0.04, 1.4, -0.4), ((-0.07, 0.62, 2), (0, 0, -1), 0.035, 1.7, 1.0),
                                 ((-0.9, -0.22, 2), (0, 0, -1), 0.04, 1.6, 0.0), ((0.95, -0.3, -2), (0, 0, 1), 0.05, 1.5, 0.5)]:
         tgt = wing if abs(o[0]) < 1.5 and abs(o[2]) == 2 and abs(o[0]) > 0.5 else fus
-        rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(10)]
-        decal("Rust", tgt, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 10) * rr[i] * asp, math.sin(2 * math.pi * i / 10) * rr[i])
-                                             for i in range(10)]], spin=spin)
+        decal("Rust", tgt, o, d, C["RUST"], blot_shape(sz, asp), spin=spin)
     pt = decal("Patch", fus, (-2, -0.42, 0.74), (1, 0, 0), METAL, rect_shape(0.2, 0.14), up=Z, spin=0.12, lift=0.006)
     for a, b in ((-0.08, -0.05), (0.08, -0.05), (-0.08, 0.05), (0.08, 0.05)):
         q = Quaternion(X, 0.12)
@@ -1277,9 +1286,7 @@ def build_helicopter():
     # wear
     for o, d, sz, asp, spin in [((2, -0.1, 0.42), (-1, 0, 0), 0.045, 1.6, 0.2), ((-2, 0.55, 0.62), (1, 0, 0), 0.05, 1.4, -0.3),
                                 ((2, 1.15, 0.8), (-1, 0, 0), 0.03, 1.8, 0.1), ((-2, 0.05, 0.45), (1, 0, 0), 0.04, 1.5, 0.5)]:
-        rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(10)]
-        decal("Rust", hull, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 10) * rr[i] * asp,
-                                                math.sin(2 * math.pi * i / 10) * rr[i]) for i in range(10)]], spin=spin)
+        decal("Rust", hull, o, d, C["RUST"], blot_shape(sz, asp), spin=spin)
     body = collapse("Body", GROUP)
 
     # main rotor: hub + four blades (grey, red/white tips), origin at the hub
@@ -1407,7 +1414,7 @@ def build_rocket():
     side = hd.cross(Z).normalized()
     for s in (-1, 1):
         tube("LadderRail", [hd * 0.44 + side * s * 0.085 + Z * 0.72, hd * 0.54 + side * s * 0.085 + Z * 0.66,
-                            hd * 0.66 + side * s * 0.085 + Z * 0.0], 0.017, CHROME, sides=6, rad=0.05, n=2)
+                            hd * 0.66 + side * s * 0.085 + Z * 0.016], 0.017, CHROME, sides=6, rad=0.05, n=2)
     for k in range(5):
         t = (k + 0.6) / 5.4
         p = hd * (0.54 + 0.12 * t) + Z * (0.66 * (1 - t))
@@ -1431,16 +1438,375 @@ def build_rocket():
     # wear
     for o, d, sz, asp, spin in [((2, -0.3, 0.6), (-1, 0.3, 0), 0.05, 1.5, 0.2), ((-2, 0.2, 1.0), (1, -0.1, 0), 0.04, 1.6, -0.3),
                                 ((0.3, 2, 0.75), (-0.15, -1, 0), 0.045, 1.4, 0.6)]:
-        rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(12)]
-        decal("Rust", hull, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 12) * rr[i] * asp,
-                                                math.sin(2 * math.pi * i / 12) * rr[i]) for i in range(12)]], spin=spin)
+        decal("Rust", hull, o, d, C["RUST"], blot_shape(sz, asp), spin=spin)
     body = collapse("Body", GROUP)
     seat = empty("Seat", SEAT)
     flame = empty("Flame", FLAME)
     finish("rocket", [body, seat, flame], SEAT, thumb_dir=(2.4, -3.3, 1.2))
 
+# =================================================================== SLEIGH
+def spiral2d(c, r0, r1, a0, a1, n):
+    """Points (y, z) on a spiral around c from angle a0 to a1 (degrees), radius r0 -> r1."""
+    out = []
+    for i in range(n + 1):
+        t = i / n
+        a = math.radians(a0 + (a1 - a0) * t)
+        r = r0 + (r1 - r0) * t
+        out.append((c[0] + math.cos(a) * r, c[1] + math.sin(a) * r))
+    return out
 
-BUILDERS = {"plane": build_plane, "helicopter": build_helicopter, "rocket": build_rocket}
+
+def ribbon(name, pts2d, x, w, m, outward):
+    """Flat strip (filigree) on the plane x = const, facing +/-X."""
+    bm = bmesh.new()
+    pts = [Vector((0, p[0], p[1])) for p in pts2d]
+    rows = []
+    for i, p in enumerate(pts):
+        a = pts[max(i - 1, 0)]
+        b = pts[min(i + 1, len(pts) - 1)]
+        t = (b - a).normalized()
+        nrm = Vector((0, -t.z, t.y))
+        ww = w * (0.35 + 0.65 * math.sin(math.pi * min(1.0, (i + 0.5) / len(pts))) ** 0.5)
+        rows.append([bm.verts.new(Vector((x, p.y, p.z)) + nrm * ww / 2), bm.verts.new(Vector((x, p.y, p.z)) - nrm * ww / 2)])
+    for A, B in zip(rows, rows[1:]):
+        f = bm.faces.new([A[0], A[1], B[1], B[0]])
+        f.normal_update()
+        if f.normal.x * outward < 0:
+            f.normal_flip()
+    return finish_obj(name, bm, m, smooth=False)
+
+
+def build_sleigh():
+    C = common_mats()
+    RED = mat("Paint", "c8201c", 0.28, coat=0.65)
+    REDIN = mat("PaintInner", "8e1614", 0.45, coat=0.3)
+    GOLD = mat("Gold", "f2c14e", 0.22, metal=1.0)
+    VELVET = mat("Velvet", "2f6b3f", 0.75, coat=0.05)
+    SACK = mat("Sack", "b98a55", 0.9)
+    ROPE = mat("Rope", "e9d3a3", 0.85)
+    LEATHER = mat("Leather", "5a3420", 0.55, coat=0.15)
+    LANTERN = mat("Lantern", "fff1c9", 0.05, emit="ffcf6b", emit_strength=4.0)
+    GIFT = [mat("GiftBlue", "2f7fd6", 0.3, coat=0.5), mat("GiftGreen", "2fa65a", 0.3, coat=0.5),
+            mat("GiftPurple", "8a4fd0", 0.3, coat=0.5), mat("GiftWhite", "f4f1ea", 0.3, coat=0.5)]
+    FUR = mat("Fur", "8b5a35", 0.8)
+    FURLIGHT = mat("FurLight", "e3c9a0", 0.8)
+    HOOF = mat("Hoof", "2b211b", 0.5, coat=0.3)
+    ANTLER = mat("Antler", "dcc6a0", 0.6)
+    EYE = mat("Eye", "0d0d0f", 0.1, coat=1.0)
+    WHITE = mat("White", "ffffff", 0.3)
+    NOSEB = mat("Nose", "151517", 0.25, coat=0.8)
+    NOSEGLOW = mat("NoseGlow", "ff2214", 0.2, emit="ff1a0a", emit_strength=2.5)
+    SEAT = Vector((0.0, 0.04, 0.46))
+    PX = 0.37  # side panel centre |x|
+    RX = 0.33  # runner |x|
+
+    new_group()
+    # side panels: high scrolled back, low middle, swan-neck front
+    side = [(-0.42, 0.22), (0.88, 0.22), (1.0, 0.32), (1.03, 0.62), (1.0, 0.86), (0.92, 0.96), (0.82, 0.95), (0.76, 0.85),
+            (0.6, 0.74), (0.32, 0.71), (0.2, 0.6), (-0.12, 0.58), (-0.3, 0.66), (-0.5, 0.84), (-0.62, 0.93), (-0.71, 0.9),
+            (-0.69, 0.78), (-0.57, 0.6), (-0.5, 0.38)]
+    rads = [0.08, 0.09, 0.1, 0.12, 0.1, 0.06, 0.05, 0.08, 0.1, 0.1, 0.1, 0.12, 0.12, 0.1, 0.05, 0.05, 0.1, 0.12, 0.1]
+    outline = [(p.x, p.y) for p in fillet(side, rads, n=2, closed=True)]
+    for sx in (-1, 1):
+        extrude("SidePanel", outline, 0.06, [RED, REDIN], bevel=0.018, seg=1, M=TRS((sx * PX, 0, 0)), angle=40,
+                mat_fn=lambda p, sx=sx: 1 if p.normal.x * sx < -0.5 else 0)
+    # front wall and rear wall (curved plates), floor
+    def plate(name, centre, w, m, thick=0.05):
+        cl = [Vector((0, a, b)) for a, b in centre]
+        ptsA, ptsB = [], []
+        for i, p in enumerate(cl):
+            a, b = cl[max(i - 1, 0)], cl[min(i + 1, len(cl) - 1)]
+            t = (b - a).normalized()
+            nrm = Vector((0, -t.z, t.y))
+            ptsA.append((p + nrm * thick / 2).yz)
+            ptsB.append((p - nrm * thick / 2).yz)
+        return extrude(name, [tuple(p) for p in ptsA + ptsB[::-1]], w, m, bevel=0.012, seg=1, angle=40)
+    fw = plate("FrontWall", fillet([(-0.47, 0.24), (-0.52, 0.45), (-0.58, 0.66), (-0.65, 0.86)], 0.1, n=2), 0.7, RED)
+    decal("FrontStar", fw, (0, -2, 0.56), (0, 1, 0), GOLD, star_shape(0.1, 0.042), up=Z, step=0.2)
+    for sx in (-1, 1):
+        decal("FrontDot", fw, (sx * 0.2, -2, 0.56), (0, 1, 0), GOLD, disc_shape(0.03, 8), up=Z, step=0.2)
+    plate("RearWall", fillet([(0.95, 0.24), (0.99, 0.46), (0.98, 0.7), (0.9, 0.9)], 0.1, n=2), 0.7, RED)
+    box("Floor", (0, 0.23, 0.245), (0.7, 1.4, 0.05), REDIN, bevel=0.0)
+    # velvet bench + tufted back
+    box("Cushion", (0, SEAT.y, SEAT.z - 0.05), (0.66, 0.36, 0.1), VELVET, bevel=0.035, seg=1)
+    box("BenchBase", (0, SEAT.y, 0.33), (0.66, 0.32, 0.16), REDIN, bevel=0.0)
+    box("SeatBack", (0, 0.31, 0.62), (0.68, 0.09, 0.36), VELVET, bevel=0.035, seg=1, rot=(-8, 0, 0))
+    tube("BackRail", [(-0.36, 0.3 + 0.02, 0.81), (0.36, 0.3 + 0.02, 0.81)], 0.02, GOLD, sides=6, rad=0)
+
+    # gold trim along the top edge of each side, ending in curls front and back
+    top = [(0.84, 0.95), (0.76, 0.85), (0.6, 0.74), (0.32, 0.71), (0.2, 0.6), (-0.12, 0.58), (-0.3, 0.66), (-0.5, 0.84), (-0.62, 0.93)]
+    toprad = [0.0, 0.08, 0.1, 0.1, 0.1, 0.12, 0.12, 0.1, 0.0]
+    trim = [Vector((0, p.x, p.y)) for p in fillet(top, toprad, n=1)]
+    rear_curl = spiral2d((0.92, 0.88), 0.085, 0.025, 120, -200, 7)
+    front_curl = spiral2d((-0.645, 0.85), 0.085, 0.025, 60, 380, 7)
+    for sx in (-1, 1):
+        x = sx * (PX + 0.035)
+        path = [Vector((x, a, b)) for a, b in rear_curl[::-1]] + [Vector((x, p.y, p.z)) for p in trim] + \
+               [Vector((x, a, b)) for a, b in front_curl]
+        tube("Trim", path, 0.017, GOLD, sides=5, rad=0)
+        tube("BottomTrim", [(x, 0.9, 0.235), (x, -0.45, 0.235)], 0.014, GOLD, sides=5, rad=0)
+        # filigree swirls and a gold star on the outside of each panel
+        xo = sx * (PX + 0.031)
+        ribbon("Swirl", spiral2d((0.62, 0.45), 0.13, 0.02, 200, -160, 22), xo, 0.024, GOLD, sx)
+        ribbon("Swirl", spiral2d((-0.3, 0.42), 0.11, 0.02, -20, 340, 20), xo, 0.022, GOLD, sx)
+        bm = bmesh.new()
+        st = star_shape(0.085, 0.036)
+        for tri_ in st:
+            vs = [bm.verts.new((xo + sx * 0.001, 0.17 + a * sx, 0.41 + b)) for a, b in tri_]
+            f = bm.faces.new(vs)
+            f.normal_update()
+            if f.normal.x * sx < 0:
+                f.normal_flip()
+        finish_obj("Star", bm, GOLD, smooth=False)
+
+    # curly runners on gold struts
+    run = [(1.0, 0.09), (0.93, 0.04), (0.8, 0.03)] + spiral2d((-0.7, 0.33), 0.30, 0.06, -90, -500, 22)
+    run = [(1.02, 0.12), (0.96, 0.06)] + [(0.85, 0.03)] + [(y, z) for y, z in run[3:]]
+    for sx in (-1, 1):
+        x = sx * RX
+        path = [Vector((x, a, b)) for a, b in run]
+        tube("Runner", path, lambda t: 0.026 if t < 0.7 else 0.026 - 0.012 * (t - 0.7) / 0.3, GOLD, sides=5, rad=0)
+        blob("RunnerEnd", path[-1], 0.03, GOLD, seg=6, rings=4)
+        for y in (-0.28, 0.3, 0.8):
+            tube("Strut", [(x, y, 0.04), (x, y, 0.23)], 0.02, GOLD, sides=5, rad=0, caps=False)
+        tube("Brace", [(x, -0.28, 0.06), (x, 0.3, 0.2), (x, 0.8, 0.06)], 0.012, GOLD, sides=4, rad=0.2, n=3)
+
+    # Santa's sack with presents poking out, and a couple on the floor
+    random.seed(11)
+    bm = bmesh.new()
+    prof = [(0.0, 0.0), (0.2, 0.01), (0.27, 0.08), (0.29, 0.2), (0.27, 0.34), (0.2, 0.45), (0.1, 0.52), (0.075, 0.55), (0.1, 0.6),
+            (0.13, 0.64)]
+    sack_c = Vector((-0.05, 0.62, 0.27))
+    rings_ = []
+    for r, h in prof:
+        ring_ = []
+        for i in range(12):
+            a = 2 * math.pi * i / 12
+            k = 1 + (0.08 * math.sin(3 * a + h * 9) + 0.05 * math.sin(5 * a)) * (1 if 0.05 < h < 0.5 else 0.3)
+            ring_.append(bm.verts.new(sack_c + Vector((math.cos(a) * r * k * 1.05, math.sin(a) * r * k * 0.9, h + 0.02 * math.sin(2 * a)))))
+        rings_.append(ring_)
+    for A, B in zip(rings_, rings_[1:]):
+        for i in range(12):
+            j = (i + 1) % 12
+            bm.faces.new([A[i], A[j], B[j], B[i]])
+    bm.faces.new(rings_[0][::-1])
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    for f in bm.faces:
+        if len(f.verts) > 4:
+            bmesh.ops.reverse_faces(bm, faces=[f]) if f.normal.z > 0 else None
+    sack = finish_obj("Sack", bm, SACK, smooth=lambda p: len(p.vertices) == 4)
+    smooth_by_angle(sack, 60)
+    tube("SackTie", [sack_c + Vector((math.cos(2 * math.pi * i / 12) * 0.085, math.sin(2 * math.pi * i / 12) * 0.075, 0.555))
+                     for i in range(8)], 0.016, ROPE, sides=4, rad=0, closed=True, up=Z)
+    disc("SackMouth", sack_c + Z * 0.62, Z, 0.11, LEATHER, seg=12)
+    gifts = [((-0.08, 0.6, 0.86), (0.13, 0.13, 0.13), (12, -10, 20), 0, RED),
+             ((0.04, 0.66, 0.84), (0.11, 0.11, 0.15), (-15, 8, -25), 1, GOLD),
+             ((-0.14, 0.67, 0.83), (0.1, 0.1, 0.1), (5, 20, 40), 2, VELVET),
+             ((0.22, 0.75, 0.33), (0.16, 0.16, 0.14), (0, 0, 15), 3, RED),
+             ((0.22, 0.55, 0.32), (0.12, 0.12, 0.12), (0, 0, -20), 0, GOLD)]
+    for gk, (c, sz, rot, gi, ribbon_m) in enumerate(gifts):
+        box("Gift", c, sz, GIFT[gi], bevel=0.012, seg=1, rot=rot)
+        box("RibbonA", c, (sz[0] + 0.006, sz[1] * 0.22, sz[2] + 0.006), ribbon_m, bevel=0.0, rot=rot)
+        box("RibbonB", c, (sz[0] * 0.22, sz[1] + 0.006, sz[2] + 0.006), ribbon_m, bevel=0.0, rot=rot)
+        q = Euler([math.radians(a) for a in rot]).to_matrix()
+        topc = Vector(c) + q @ Vector((0, 0, sz[2] / 2 + 0.012))
+        for k in ((-1, 1) if gk < 3 else ()):
+            blob("Bow", topc + q @ Vector((k * 0.025, 0, 0)), (0.026, 0.012, 0.016), ribbon_m, seg=6, rings=3,
+                 rot=(math.degrees(0.0) + rot[0], rot[1] + k * 20, rot[2]))
+
+    # lantern on a curly hook at the front left
+    tube("LanternHook", [(0.41, -0.6, 0.86), (0.47, -0.62, 0.93), (0.52, -0.66, 0.9), (0.52, -0.66, 0.84)], 0.01, GOLD, sides=4,
+         rad=0.03, n=2)
+    box("LanternGlass", (0.52, -0.66, 0.77), (0.07, 0.07, 0.09), LANTERN, bevel=0.0)
+    box("LanternTop", (0.52, -0.66, 0.83), (0.09, 0.09, 0.025), GOLD, bevel=0.008, seg=1)
+    box("LanternBase", (0.52, -0.66, 0.715), (0.09, 0.09, 0.025), GOLD, bevel=0.008, seg=1)
+    for a, b in ((-1, -1), (-1, 1), (1, -1), (1, 1)):
+        cyl("LanternPost", (0.52 + a * 0.037, -0.66 + b * 0.037, 0.72), (0.52 + a * 0.037, -0.66 + b * 0.037, 0.82), 0.006, GOLD,
+            seg=4, caps=(False, False))
+    tube("DashRail", [(-0.33, -0.66, 0.9), (0.33, -0.66, 0.9)], 0.018, GOLD, sides=6, rad=0)
+    sleigh = collapse("Body", GROUP)
+
+    # ---------------------------------------------------------- reindeer team
+    DY = -1.62
+    team = []
+
+    def deer(n, dx, rudolph):
+        D = Vector((dx, DY, 0.0))
+        BC = D + Vector((0, 0, 0.5))
+        objs = []
+        # body (two-tone: cream chest and belly), collar with bells, girth strap, white tail tuft
+        new_group()
+        BODY = [(-0.3, 0.04, 0.05, 0.06), (-0.26, 0.03, 0.105, 0.125), (-0.17, 0.01, 0.135, 0.155), (-0.04, 0.0, 0.13, 0.145),
+                (0.1, 0.01, 0.13, 0.14), (0.21, 0.03, 0.125, 0.135), (0.28, 0.045, 0.085, 0.095), (0.31, 0.05, 0.03, 0.035)]
+        secs = []
+        for yy, zz, a, b in BODY:
+            secs.append(se_pts(BC + Vector((0, yy, zz)), X, Z, a * 1.08, b, 2.2, 12, phase=0.5))
+        secs = [BC + Vector((0, -0.315, 0.04))] + secs + [BC + Vector((0, 0.325, 0.05))]
+        ob = loft("DeerTorso", secs, [FUR, FURLIGHT],
+                  mat_fn=lambda p: 1 if p.center.z < BC.z - 0.09 else 0)
+        blob("ChestFluff", BC + Vector((0, -0.25, -0.02)), (0.1, 0.07, 0.11), FURLIGHT, seg=8, rings=5, rot=(25, 0, 0))
+        cc = BC + Vector((0, -0.2, 0.012))
+        col = [se_pts(cc + Vector((0, d, 0)), X, Z, 0.153, 0.162, 2.2, 12, phase=0.5) for d in (-0.03, 0.03)]
+        loft("Collar", col, RED, cap0=False, cap1=False)
+        for k in range(3):
+            a = math.radians(-90 + (k - 1) * 34)
+            blob("Bell", cc + Vector((math.cos(a) * 0.15, -0.035, math.sin(a) * 0.17)), 0.027, GOLD, seg=7, rings=4)
+        gc = BC + Vector((0, 0.03, 0.0))
+        girth = [se_pts(gc + Vector((0, d, 0)), X, Z, 0.147, 0.151, 2.2, 12, phase=0.5) for d in (-0.025, 0.025)]
+        loft("Girth", girth, RED, cap0=False, cap1=False)
+        box("Pad", BC + Vector((0, 0.03, 0.15)), (0.2, 0.14, 0.02), RED, bevel=0.008, seg=1)
+        blob("Tail", BC + Vector((0, 0.31, 0.12)), (0.04, 0.035, 0.05), WHITE, seg=6, rings=4, rot=(-30, 0, 0))
+        objs.append(collapse("Deer%dBody" % n, GROUP, loc=BC))
+        # legs: origin at the shoulder / hip joint, hooves on the ground
+        for code, sx, front in (("FL", 1, True), ("FR", -1, True), ("BL", 1, False), ("BR", -1, False)):
+            new_group()
+            J = D + Vector((sx * 0.072, -0.19 if front else 0.19, 0.46))
+            h = J.z
+            if front:
+                path = [J + Vector((0, 0, 0.06)), J, J + Vector((0, 0.015, -0.2)), J + Vector((0, -0.01, -0.33)),
+                        J + Vector((0, 0, -h + 0.05))]
+            else:
+                path = [J + Vector((0, 0, 0.06)), J, J + Vector((0, -0.04, -0.15)), J + Vector((0, 0.035, -0.28)),
+                        J + Vector((0, 0.0, -h + 0.05))]
+            tube("Leg", path, lambda t: 0.068 - 0.036 * min(1.0, t / 0.45) - 0.004 * t, FUR, sides=5, rad=0.05, n=1)
+            blob("Cuff", (J.x, path[-1].y, 0.075), (0.038, 0.038, 0.03), FURLIGHT, seg=6, rings=3)
+            lathe("Hoof", [(0.036, 0.0), (0.038, 0.03), (0.03, 0.058)], HOOF, seg=6, cap1=False,
+                  M=Matrix.Translation((J.x, path[-1].y, 0.0)))
+            objs.append(collapse("Deer%dLeg%s" % (n, code), GROUP, loc=J))
+        # head: origin at the neck joint
+        new_group()
+        J = BC + Vector((0, -0.21, 0.1))
+        H = J + Vector((0, -0.17, 0.28))
+        tube("Neck", [J + Vector((0, 0.03, -0.05)), J + Vector((0, -0.06, 0.12)), H + Vector((0, 0.04, -0.03))],
+             lambda t: 0.085 - 0.03 * t, FUR, sides=8, rad=0.06, n=2)
+        blob("Skull", H, (0.085, 0.095, 0.08), FUR, seg=10, rings=6)
+        blob("Muzzle", H + Vector((0, -0.095, -0.035)), (0.06, 0.08, 0.054), FURLIGHT, seg=10, rings=5)
+        if rudolph:
+            blob("Nose", H + Vector((0, -0.178, -0.022)), 0.044, NOSEGLOW, seg=10, rings=6)
+        else:
+            blob("Nose", H + Vector((0, -0.17, -0.02)), (0.032, 0.026, 0.024), NOSEB, seg=8, rings=4)
+        for sx in (-1, 1):
+            blob("Eye", H + Vector((sx * 0.06, -0.05, 0.025)), 0.022, EYE, seg=7, rings=4)
+            blob("Glint", H + Vector((sx * 0.072, -0.062, 0.036)), 0.0075, WHITE, seg=4, rings=2)
+            blob("Ear", H + Vector((sx * 0.1, 0.03, 0.05)), (0.055, 0.02, 0.028), FUR, seg=6, rings=4, rot=(0, -sx * 25, sx * 15))
+            blob("EarIn", H + Vector((sx * 0.103, 0.017, 0.052)), (0.04, 0.006, 0.018), FURLIGHT, seg=5, rings=3,
+                 rot=(0, -sx * 25, sx * 15))
+            A = [H + Vector((sx * 0.04, 0.02, 0.06)), H + Vector((sx * 0.085, 0.04, 0.16)), H + Vector((sx * 0.15, 0.08, 0.24)),
+                 H + Vector((sx * 0.17, 0.16, 0.31))]
+            tube("Antler", A, lambda t: 0.021 - 0.009 * t, ANTLER, sides=5, rad=0.05, n=1)
+            tube("Tine", [A[1] + Vector((0, 0.0, 0.0)), A[1] + Vector((sx * 0.015, -0.07, 0.09))], lambda t: 0.014 - 0.006 * t, ANTLER,
+                 sides=5, rad=0)
+            tube("Tine", [A[2], A[2] + Vector((sx * 0.06, -0.05, 0.08))], lambda t: 0.013 - 0.005 * t, ANTLER, sides=5, rad=0)
+        bridle = [H + Vector((0, -0.08, -0.035)) + Vector((math.cos(2 * math.pi * i / 10) * 0.064, 0, math.sin(2 * math.pi * i / 10) * 0.058))
+                  for i in range(10)]
+        tube("Bridle", bridle, 0.009, RED, sides=3, rad=0, closed=True, up=Y)
+        objs.append(collapse("Deer%dHead" % n, GROUP, loc=J))
+        return objs
+
+    deer_objs = deer(1, 0.25, True) + deer(2, -0.25, False)
+
+    # harness: shaft and yoke, leather traces from the collars, reins to the dash
+    new_group()
+    tube("Shaft", [(0, -0.47, 0.3), (0, -1.0, 0.36), (0, -1.95, 0.44)], 0.024, RED, sides=6, rad=0.3, n=3)
+    blob("ShaftTip", (0, -1.97, 0.445), 0.034, GOLD, seg=6, rings=4)
+    tube("Yoke", [(-0.44, -1.8, 0.45), (0.44, -1.8, 0.45)], 0.02, RED, sides=6, rad=0)
+    for sx in (-1, 1):
+        blob("YokeEnd", (sx * 0.45, -1.8, 0.45), 0.026, GOLD, seg=6, rings=4)
+        for dx in (0.25, -0.25):
+            for k in (-1, 1):
+                x0 = dx + k * 0.15
+                if (dx > 0) != (sx > 0):
+                    continue
+                tube("Trace", [(x0, DY - 0.2, 0.5), (x0 * 0.9 + (0.06 if x0 > 0 else -0.06), -1.0, 0.36), (sx * 0.34, -0.5, 0.33)],
+                     0.011, LEATHER, sides=4, rad=0.3, n=3)
+        tube("Rein", [(sx * 0.25, DY - 0.22, 0.66), (sx * 0.2, -1.1, 0.8), (sx * 0.16, -0.66, 0.9)], 0.0065, RED, sides=4, rad=0.3, n=3)
+    harness = collapse("Harness", GROUP)
+    body = join_into(sleigh, [harness])
+    seat = empty("Seat", SEAT)
+    sparkles = empty("Sparkles", (0, 0.1, 0.0))
+    finish("sleigh", [body] + deer_objs + [seat, sparkles], SEAT, thumb_dir=(2.9, -2.9, 1.7))
+
+# =================================================================== HOVERBOARD
+def build_hoverboard():
+    C = common_mats()
+    PINK = mat("Paint", "ff3e9a", 0.3, coat=0.65)
+    GRIP = mat("Grip", "24252b", 0.85)
+    YELLOW = mat("Yellow", "ffd21f", 0.3, coat=0.5)
+    MAGRED = mat("MagnetRed", "e0261b", 0.3, coat=0.6)
+    GLOW = mat("HoverGlow", "8ff6ff", 0.2, emit="3ee8ff", emit_strength=5.0)
+    LAMP = mat("Lamp", "fff1c9", 0.05, emit="ffd98a", emit_strength=3.0)
+    CHROME, METAL, BLACK = C["CHROME"], C["METAL"], C["BLACK"]
+
+    DECK = [(-0.40, 0.232, 0.05, 0.014), (-0.38, 0.222, 0.105, 0.02), (-0.33, 0.2, 0.14, 0.025), (-0.25, 0.178, 0.155, 0.027),
+            (0.0, 0.17, 0.16, 0.027), (0.25, 0.178, 0.155, 0.027), (0.33, 0.198, 0.14, 0.025), (0.38, 0.218, 0.105, 0.02),
+            (0.40, 0.228, 0.05, 0.014)]
+    top_z = 0.17 + 0.027
+    SEAT = Vector((0.0, 0.0, top_z))
+    new_group()
+    ys = [-0.40 + 0.8 * i / 26 for i in range(27)]
+    secs = [Vector((0, -0.412, 0.233))]
+    for y in ys:
+        zc, a, b = crom(DECK, y)
+        secs.append(se_pts((0, y, zc), X, Z, a, b, 3.2, 24))
+    secs.append(Vector((0, 0.412, 0.229)))
+
+    def deck_mat(p):
+        n = p.normal
+        if n.z > 0.75 and abs(p.center.y) < 0.35 and abs(p.center.x) < 0.128:
+            return 1
+        if n.z > 0.2:
+            return 0
+        if n.z > -0.45:
+            return 2
+        return 0
+    deck = loft("Deck", secs, [PINK, GRIP, YELLOW], mat_fn=deck_mat)
+    smooth_by_angle(deck, 40)
+    # top graphics: a yellow lightning bolt and a red horseshoe magnet
+    zap = [[(-0.01, 0.14), (0.055, 0.14), (0.022, 0.02), (-0.045, 0.02)],
+           [(-0.02, 0.035), (0.06, 0.035), (-0.035, -0.15)]]
+    decal("Zap", deck, (0, 0.17, 1), (0, 0, -1), YELLOW, zap, up=-Y, step=0.3)
+    mag = []
+    for i in range(8):
+        a0, a1 = math.pi * i / 8, math.pi * (i + 1) / 8
+        mag.append([(math.cos(a0) * 0.05, math.sin(a0) * 0.05), (math.cos(a0) * 0.09, math.sin(a0) * 0.09),
+                    (math.cos(a1) * 0.09, math.sin(a1) * 0.09), (math.cos(a1) * 0.05, math.sin(a1) * 0.05)])
+    for sx in (-1, 1):
+        mag.append([(sx * 0.05, 0), (sx * 0.09, 0), (sx * 0.09, -0.04), (sx * 0.05, -0.04)][:: 1 if sx > 0 else -1])
+    decal("Magnet", deck, (0, -0.17, 1), (0, 0, -1), MAGRED, mag, up=Y, step=0.3)
+    tips = [[(sx * 0.05, -0.04), (sx * 0.09, -0.04), (sx * 0.09, -0.07), (sx * 0.05, -0.07)][:: 1 if sx > 0 else -1] for sx in (-1, 1)]
+    decal("MagnetTips", deck, (0, -0.17, 1), (0, 0, -1), CHROME, tips, up=Y, step=0.3)
+    # chrome bumper rails on nose and tail
+    for sgn in (-1, 1):
+        pts = []
+        for i in range(9):
+            a = math.pi * (0.12 + 0.76 * i / 8)
+            y0 = sgn * 0.33
+            pts.append(Vector((math.cos(a) * 0.15, y0 + sgn * math.sin(a) * 0.085, crom(DECK, y0 + sgn * math.sin(a) * 0.085)[0])))
+        tube("Bumper", pts, 0.013, CHROME, sides=6, rad=0)
+    # hover pads: chrome housings with a glowing ring and red magnet band; glow discs underneath
+    for y in (-0.24, 0.24):
+        lathe("Pad", [(0.0, 0.02), (0.064, 0.02), (0.074, 0.0), (0.094, 0.004), (0.103, 0.028), (0.105, 0.05), (0.106, 0.08),
+                      (0.1, 0.11), (0.085, 0.14), (0.0, 0.15)], [CHROME, GLOW, MAGRED], seg=20, M=Matrix.Translation((0, y, 0)),
+              mat_fn=lambda p: 1 if (0.022 < p.center.z < 0.045 or p.center.z < 0.019) else (2 if 0.06 < p.center.z < 0.105 else 0))
+        disc("PadGlow", (0, y, 0.018), -Z, 0.066, GLOW, seg=16)
+        for k in range(6):
+            a = 2 * math.pi * (k + 0.5) / 6
+            bolt(Vector((math.cos(a) * 0.098, y + math.sin(a) * 0.098, 0.116)), Vector((math.cos(a), math.sin(a), 0.6)), r=0.009)
+    # glow strip under the deck + tail fins + nose lamp
+    box("UnderGlow", (0, 0, 0.142), (0.05, 0.26, 0.012), GLOW, bevel=0.0)
+    for sx in (-1, 1):
+        fo = [(p_.x, p_.y) for p_ in fillet([(0.2, 0.17), (0.33, 0.18), (0.37, 0.1), (0.29, 0.1)], [0, 0.02, 0.02, 0.02], n=2, closed=True)]
+        extrude("Fin", fo, 0.014, YELLOW, bevel=0.004, seg=1, M=TRS((sx * 0.075, 0, 0.15), (0, sx * 12, 0)) @ TRS((0, 0, -0.15)))
+    blob("NoseLamp", (0, -0.405, 0.226), (0.03, 0.012, 0.012), LAMP, seg=8, rings=4)
+    for o, d, sz in [((0.12, 0.05, -1), (0, 0, 1), 0.035), ((-0.13, -0.2, -1), (0, 0, 1), 0.03)]:
+        decal("Scuff", deck, o, d, C["RUST"], blot_shape(sz, 1.6), step=0.2)
+    body = collapse("Body", GROUP)
+    seat = empty("Seat", SEAT)
+    fx = empty("HoverFX", (0, 0, 0.0))
+    finish("hoverboard", [body, seat, fx], SEAT, stand=True, thumb_dir=(2.2, -3.0, 2.2))
+
+
+BUILDERS = {"sleigh": build_sleigh, "plane": build_plane, "helicopter": build_helicopter, "rocket": build_rocket, "hoverboard": build_hoverboard}
 
 
 def reset():

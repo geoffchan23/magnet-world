@@ -35,6 +35,8 @@ func setup(r: Node3D, kind: String) -> void:
 			cannon = ride.find_child("Cannon", true, false) as Node3D
 			if cannon:
 				cannon_rest = cannon.transform
+				if nozzle:
+					nozzle.reparent(cannon)  # so the nozzle swings with the cannon
 			water = make_water()
 			loop_snd = sound("water", -10.0)
 		"siren":
@@ -161,7 +163,7 @@ func spray(on: bool, delta: float) -> void:
 	if not on:
 		return
 	var from: Vector3 = water.global_position
-	var dir: Vector3 = (ride.global_basis.z + Vector3(0, 0.25, 0)).normalized()
+	var dir: Vector3 = nozzle.global_basis.z if nozzle else (ride.global_basis.z + Vector3(0, 0.25, 0)).normalized()
 	# Where the water lands: a few steps along a falling arc.
 	var p := from
 	var v := dir * 11.0
@@ -290,10 +292,10 @@ func make_water() -> CPUParticles3D:
 	p.mesh = q
 	var host: Node3D = nozzle if nozzle else ride
 	host.add_child(p)
-	if nozzle == null:
+	if nozzle:
+		p.direction = Vector3(0, 0, 1)  # the nozzle points where the water goes
+	else:
 		p.position = Vector3(0, 1.2, 0.8)
-	# Spray along the ride's forward axis (the nozzle may be turned).
-	p.global_basis = ride.global_basis
 	return p
 
 

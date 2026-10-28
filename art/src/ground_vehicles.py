@@ -107,7 +107,8 @@ def finish_obj(name, bm, m, smooth=True, bevel=0.0, seg=2, angle=30):
     bm.free()
     for p in me.polygons:
         p.use_smooth = smooth if not callable(smooth) else smooth(p)
-    me.materials.append(m)
+    for mm in (m if isinstance(m, (list, tuple)) else [m]):
+        me.materials.append(mm)
     ob = bpy.data.objects.new(name, me)
     bpy.context.collection.objects.link(ob)
     if bevel:
@@ -339,15 +340,18 @@ def shoulder_prism(name, pts, hw, m, inset=0.04, drop=0.03, z_lo=0.4, z_hi=0.6, 
     return loft(name, secs, m, bevel=bevel, seg=seg, angle=angle, smooth=lambda p: len(p.vertices) == 4)
 
 
-def loft(name, sections, m, bevel=0.0, seg=2, angle=30, caps=True, smooth=True):
-    """Join closed loops of equal vertex count (lists of 3D points) with quads."""
+def loft(name, sections, m, bevel=0.0, seg=2, angle=30, caps=True, smooth=True, face_mat=None):
+    """Join closed loops of equal vertex count (lists of 3D points) with quads.
+    m may be a list of materials with face_mat(k, span) -> material index for the quad leaving point k."""
     bm = bmesh.new()
     rows = [[bm.verts.new(Vector(p)) for p in s] for s in sections]
     n = len(sections[0])
-    for A, B in zip(rows, rows[1:]):
+    for span, (A, B) in enumerate(zip(rows, rows[1:])):
         for i in range(n):
             j = (i + 1) % n
-            bm.faces.new([A[i], A[j], B[j], B[i]])
+            f = bm.faces.new([A[i], A[j], B[j], B[i]])
+            if face_mat:
+                f.material_index = face_mat(i, span)
     if caps:
         bm.faces.new(rows[0][::-1])
         bm.faces.new(rows[-1])
@@ -355,15 +359,23 @@ def loft(name, sections, m, bevel=0.0, seg=2, angle=30, caps=True, smooth=True):
     return finish_obj(name, bm, m, smooth=smooth, bevel=bevel, seg=seg, angle=angle)
 
 
-def rrect(cx, cz, hw, hh, r, n=2):
-    """Rounded rectangle loop in the (x, z) plane, CCW, 4*(n+1) points."""
+def rrect(cx, cz, hw, hh, r, n=2, top=()):
+    """Rounded rectangle loop in the (x, z) plane, CCW, 4*(n+1) points (+ extra points along the top
+    edge at the given fractions of the half width, listed from +x to -x)."""
     pts = []
     for (sx, sz, a0) in ((1, 1, 0), (-1, 1, 90), (-1, -1, 180), (1, -1, 270)):
         ccx, ccz = cx + sx * (hw - r), cz + sz * (hh - r)
         for k in range(n + 1):
             a = math.radians(a0 + 90 * k / n)
             pts.append((ccx + math.cos(a) * r, ccz + math.sin(a) * r))
+        if sx == 1 and sz == 1:
+            pts += [(cx + f * (hw - r), cz + hh) for f in top]
     return pts
+
+
+def section(y, loop2d, taper_top=0.0):
+    """Lift an (x, z) loop into 3D at y."""
+    return [(x, y, z) for x, z in loop2d]
 
 
 def arch(cy, cz, r, zb, n=8):
@@ -394,7 +406,7 @@ def arc_band(name, cy, cz, r_in, r_out, x0, x1, m, a0=0.0, a1=pi, steps=8, bevel
     return finish_obj(name, bm, m, bevel=bevel, seg=1, angle=40)
 
 
-def lathe(name, prof, m, steps=16, out=(1.0, 0.0), phase=0.0):
+def lathe(name, prof, m, steps=16, out=(1.0, 0.0), phase=0.0, face_mat=None):
     """Surface of revolution about X from a profile [(x, r), ...]. `out` = (dx, dr) hint for the
     side the first segment's normal should face."""
     bm = bmesh.new()
@@ -407,6 +419,8 @@ def lathe(name, prof, m, steps=16, out=(1.0, 0.0), phase=0.0):
         A, B = rings[i], rings[(i + 1) % steps]
         for k in range(len(prof) - 1):
             f = bm.faces.new([A[k], A[k + 1], B[k + 1], B[k]])
+            if face_mat:
+                f.material_index = face_mat(i, k)
             if first is None:
                 first = f
     bm.normal_update()
@@ -416,6 +430,13 @@ def lathe(name, prof, m, steps=16, out=(1.0, 0.0), phase=0.0):
     if first.normal.dot(hint) < 0:
         bmesh.ops.reverse_faces(bm, faces=list(bm.faces))
     return finish_obj(name, bm, m, smooth=True)
+
+
+def vlathe(name, prof, base, m, steps=16, face_mat=None, phase=0.0):
+    """Vertical surface of revolution: prof = [(height, radius), ...] about the Z axis through base."""
+    ob = lathe(name, prof, m, steps=steps, out=(0.0, 1.0), phase=phase, face_mat=face_mat)
+    ob.data.transform(Matrix.Translation(Vector(base)) @ Euler((0, -pi / 2, 0)).to_matrix().to_4x4())
+    return ob
 
 
 def frame_from(right, up):
@@ -629,9 +650,9 @@ def rim(name, W, rim_r, style, paint, steps=16, lugs=6, cap=None):
         if style == "beadlock":
             ring(name + "_Beadlock", (lip_x + 0.008, 0, 0), X, rim_r * 0.84, rim_r + 0.02, 0.024, CHROME, seg=steps,
                  sides=(0, 1, 2))
-            for i in range(12):
-                a = 2 * pi * i / 12
-                bolt((lip_x + 0.02, math.cos(a) * rim_r * 0.92, math.sin(a) * rim_r * 0.92), X, r=0.013)
+            for i in range(8):
+                a = 2 * pi * i / 8
+                bolt((lip_x + 0.02, math.cos(a) * rim_r * 0.92, math.sin(a) * rim_r * 0.92), X, r=0.014)
 
 
 def build_wheel(name, R, W, rim_r, tread, rim_style, rim_paint, right, steps=18, rim_steps=16, depth=0.014,
@@ -1661,10 +1682,567 @@ def build_garbage_truck():
     return objs, {"wheel_radius": WR}, SEAT
 
 
+TOPS = (0.62, 0.36, 0.1, -0.1, -0.36, -0.62)
+
+
+def striped(k, span):
+    """Face material for TOPS-lofted sections: 0 paint, 1 stripe, 2 pinstripe."""
+    return {3: 1, 7: 1, 5: 2}.get(k, 0)
+
+
+def roundel(num, origin, right, up, r, disc_m, txt_m, lift=0.004):
+    flat_poly("Roundel", [(math.cos(2 * pi * k / 16) * r, math.sin(2 * pi * k / 16) * r) for k in range(16)], origin,
+              right, up, disc_m, lift=lift)
+    text("Number", num, r * 1.25, origin, right, up, txt_m, font="Arial Black.ttf", lift=lift + 0.002, res=1)
+
+
+def build_race_car():
+    PAINT = mat("Paint", "ffbf00", 0.3, coat=0.45)
+    STRIPE = mat("Stripe", "16171a", 0.3, coat=0.6)
+    ACCENT = mat("Accent", "e5262b", 0.3, coat=0.8)
+    WHITE = mat("White", "f6f5f0", 0.35, coat=0.5)
+    CARBON = mat("Carbon", "222326", 0.35, coat=0.4)
+    MARK = mat("TyreMark", "f2f2f2", 0.6)
+
+    WR = 0.25
+    FY, RY = -0.74, 0.64
+    FT, RT = 0.47, 0.50
+    SEAT = Vector((0.0, -0.04, 0.23))
+    STEER = SEAT + Vector((0, -0.27, 0.12))
+    STEER_AX = Vector((0, 0.8, 0.6))
+
+    new_group()
+    # ---------- nose cone with twin stripes
+    nose = [(-1.20, 0.19, 0.055, 0.04), (-1.05, 0.21, 0.10, 0.065), (-0.74, 0.245, 0.155, 0.10),
+            (-0.42, 0.26, 0.205, 0.14)]
+    secs = [section(y, rrect(0, cz, hw, hh, min(hw, hh) * 0.7, n=2, top=TOPS)) for y, cz, hw, hh in nose]
+    loft("Nose", secs, [PAINT, STRIPE, ACCENT], bevel=0.0, smooth=True, face_mat=striped)
+    # ---------- cockpit: side walls, floor, black coaming pad
+    def tub(hw, z0, z1, wall=0.045, r=0.07):
+        """U-shaped cockpit tub cross-section: rounded outside, open top."""
+        return ([(hw - wall, z1), (hw - 0.012, z1), (hw, z1 - 0.012)] + quarter(hw, z0, r, 1) + quarter(hw, z0, r, -1) +
+                [(-hw, z1 - 0.012), (-hw + 0.012, z1), (-hw + wall, z1), (-hw + wall, z0 + 0.04), (hw - wall, z0 + 0.04)])
+
+    def quarter(hw, z0, r, side):
+        c = (side * (hw - r), z0 + r)
+        a0, a1 = (0, -pi / 2) if side > 0 else (-pi / 2, -pi)
+        return [(c[0] + math.cos(a0 + (a1 - a0) * k / 2) * r, c[1] + math.sin(a0 + (a1 - a0) * k / 2) * r)
+                for k in range(3)]
+    loft("Tub", [section(-0.43, tub(0.205, 0.12, 0.40)), section(0.28, tub(0.25, 0.11, 0.42))], PAINT, bevel=0.0,
+         smooth=lambda p: len(p.vertices) == 4)
+    bbox("CockpitFloor", (-0.21, -0.43, 0.11), (0.21, 0.28, 0.15), CARBON, bevel=0.0)
+    tube("Coaming", [(0.0, -0.40, 0.405), (0.2, -0.40, 0.405), (0.2, 0.25, 0.405), (-0.2, 0.25, 0.405),
+                     (-0.2, -0.40, 0.405), (0.001, -0.40, 0.405)], 0.022, BLACK, sides=5, rad=0.08, n=2)
+    seat_block(SEAT, 0.3, 0.26, SEATM, back_h=0.26, tilt=-18, bolster=False)
+    for s in (-1, 1):  # red speed stripe along the tub flank
+        rgt = Vector((s * 0.045, s * 0.71, 0)).normalized()
+        flat_poly("SideStripe", [(-0.36, -0.02), (0.30, -0.02), (0.34, 0.02), (-0.32, 0.02)],
+                  (s * 0.2275, -0.075, 0.33), rgt, Z, ACCENT, lift=0.004)
+        flat_poly("SideStripe2", [(-0.30, -0.008), (0.24, -0.008), (0.26, 0.008), (-0.28, 0.008)],
+                  (s * 0.2275, -0.075, 0.285), rgt, Z, STRIPE, lift=0.004)
+    col_end = STEER - STEER_AX * 0.02
+    cyl("Column", col_end - STEER_AX * 0.16, col_end, 0.015, BLACK, seg=5, caps=(False, True))
+    bbox("Dash", (-0.18, -0.44, 0.30), (0.18, -0.38, 0.40), CARBON, bevel=0.01)
+    # ---------- engine cover + airbox/roll hoop (above the helmet) + sidepods
+    eng = [(0.26, 0.27, 0.25, 0.16), (0.55, 0.27, 0.215, 0.15), (0.86, 0.245, 0.135, 0.11), (1.05, 0.22, 0.075, 0.07)]
+    secs = [section(y, rrect(0, cz, hw, hh, min(hw, hh) * 0.7, n=2, top=TOPS)) for y, cz, hw, hh in eng]
+    loft("EngineCover", secs, [PAINT, STRIPE, ACCENT], bevel=0.0, smooth=True, face_mat=striped)
+    air = [(0.27, 0.60, 0.065, 0.19), (0.38, 0.59, 0.075, 0.18), (0.62, 0.50, 0.07, 0.09), (0.84, 0.43, 0.045, 0.03)]
+    secs = [section(y, rrect(0, cz, hw, hh, min(hw, hh) * 0.8, n=2)) for y, cz, hw, hh in air]
+    loft("Airbox", secs, PAINT, bevel=0.0, smooth=True)
+    flat_poly("Intake", [(x, z) for x, z in rrect(0, 0.68, 0.048, 0.075, 0.04, n=2)], (0, 0.269, 0), (-1, 0, 0), Z,
+              BLACK, lift=0.0)
+    tube("RollHoop", [(0.17, 0.27, 0.40), (0.10, 0.30, 0.83), (-0.10, 0.30, 0.83), (-0.17, 0.27, 0.40)], 0.018,
+         CHROME, sides=6, rad=0.06, n=2)
+    for s in (-1, 1):
+        pods = [(-0.16, s * 0.35, 0.215, 0.105, 0.095), (0.12, s * 0.355, 0.215, 0.115, 0.1),
+                (0.36, s * 0.31, 0.2, 0.085, 0.08), (0.56, s * 0.25, 0.18, 0.045, 0.05)]
+        secs = [section(y, rrect(cx, cz, hw, hh, min(hw, hh) * 0.75, n=2)) for y, cx, cz, hw, hh in pods]
+        loft("Sidepod", secs, PAINT, bevel=0.0, smooth=True)
+        flat_poly("PodInlet", [(x - s * 0.35 * 0 , z) for x, z in rrect(0, 0.215, 0.085, 0.075, 0.05, n=2)],
+                  (s * 0.35, -0.161, 0), (1, 0, 0), Z, BLACK, lift=0.0)
+        # side stripe + number on the sidepod flank
+        roundel("7", (s * 0.47, 0.12, 0.215), (0, s, 0), Z, 0.075, WHITE, BLACK)
+        # mirrors on stalks
+        cyl("MirrorStalk", (s * 0.30, -0.10, 0.30), (s * 0.33, -0.12, 0.42), 0.01, CARBON, seg=4, caps=(False, False))
+        box("Mirror", (s * 0.34, -0.13, 0.44), (0.1, 0.035, 0.055), PAINT, bevel=0.012)
+        box("MirrorGlass", (s * 0.34, -0.112, 0.44), (0.08, 0.004, 0.04), CHROME, bevel=0.0)
+    # floor / plank under everything
+    shaped_box("Floor", lambda sx, sy, sz: (sx * (0.20 if sy < 0 else 0.42), -0.45 if sy < 0 else 0.70,
+                                            0.075 if sz < 0 else 0.11), CARBON, bevel=0.0)
+    # number on the nose top
+    nose_up = Vector((0, 0.28, 0.05)).normalized()
+    roundel("7", (0, -0.58, 0.3775), X, nose_up, 0.065, WHITE, BLACK, lift=0.005)
+    # ---------- front wing
+    fw_y0, fw_y1 = -1.30, -1.15
+    shaped_box("FrontWing", lambda sx, sy, sz: (sx * 0.52, fw_y0 if sy < 0 else fw_y1, (0.06 if sy < 0 else 0.07) +
+                                                (0.0 if sz < 0 else 0.02)), ACCENT, bevel=0.008, seg=1)
+    shaped_box("FrontFlap", lambda sx, sy, sz: (sx * 0.5, -1.17 if sy < 0 else -1.09, (0.10 if sy < 0 else 0.13) +
+                                                (0.0 if sz < 0 else 0.014)), STRIPE, bevel=0.0)
+    for s in (-1, 1):
+        bbox("FWEndplate", (min(s * 0.515, s * 0.535), -1.32, 0.04), (max(s * 0.515, s * 0.535), -1.07, 0.16), STRIPE,
+             bevel=0.006)
+        beam("FWPylon", (s * 0.05, -1.12, 0.2), (s * 0.07, -1.2, 0.085), 0.015, 0.06, CARBON, side=X, bevel=0.0)
+    # ---------- rear wing on two pylons
+    rw_z = 0.66
+    shaped_box("RearWing", lambda sx, sy, sz: (sx * 0.40, 0.98 if sy < 0 else 1.18, (rw_z + 0.01 if sy < 0 else rw_z) +
+                                               (0.0 if sz < 0 else 0.03)), ACCENT, bevel=0.01, seg=1)
+    shaped_box("RearFlap", lambda sx, sy, sz: (sx * 0.40, 1.08 if sy < 0 else 1.18, (rw_z + 0.07 if sy < 0 else rw_z + 0.12)
+                                               + (0.0 if sz < 0 else 0.018)), STRIPE, bevel=0.0)
+    for s in (-1, 1):
+        bbox("RWEndplate", (min(s * 0.40, s * 0.425), 0.92, 0.42), (max(s * 0.40, s * 0.425), 1.22, 0.84), PAINT,
+             bevel=0.008)
+        roundel("7", (s * 0.425, 1.07, 0.62), (0, s, 0), Z, 0.07, WHITE, BLACK)
+        beam("RWPylon", (s * 0.08, 0.98, 0.25), (s * 0.08, 1.08, rw_z + 0.01), 0.02, 0.08, CARBON, side=X, bevel=0.0)
+    # gearbox, rain light, exhausts
+    bbox("Gearbox", (-0.09, 0.95, 0.12), (0.09, 1.16, 0.28), CARBON, bevel=0.015)
+    bbox("RainLight", (-0.035, 1.16, 0.15), (0.035, 1.175, 0.20), TAILLIGHT, bevel=0.0)
+    for s in (-1, 1):
+        cyl("Exhaust", (s * 0.06, 0.92, 0.30), (s * 0.08, 1.12, 0.36), 0.026, CHROME, seg=8, caps=(True, False))
+        disc("ExhaustHole", (s * 0.08, 1.12, 0.36), Vector((0.02, 0.2, 0.06)).normalized(), 0.02, BLACK, seg=8)
+    # ---------- suspension: wishbones + pushrods to each hub
+    for (yy, tr) in ((FY, FT), (RY, RT)):
+        for s in (-1, 1):
+            hub = Vector((s * (tr - 0.06), yy, WR))
+            inner_x = 0.14 if yy < 0 else 0.12
+            for dz, (dy0, dy1) in ((-0.05, (-0.1, 0.1)), (0.05, (-0.08, 0.08))):
+                for dy in (dy0, dy1):
+                    beam("Wishbone", (s * inner_x, yy + dy, WR + dz - (0.03 if yy > 0 else 0.0)), hub + Vector((0, 0, dz)),
+                         0.014, 0.014, CARBON, side=Z, bevel=0.0)
+            beam("Pushrod", hub + Vector((-s * 0.02, 0, -0.04)), (s * inner_x, yy, 0.30), 0.012, 0.012, CHROME, side=Y,
+                 bevel=0.0)
+            cyl("Upright", hub + Vector((0, 0, -0.08)), hub + Vector((0, 0, 0.08)), 0.025, METAL, seg=6)
+
+    body = collapse("Body", GROUP)
+    weather(body, 10, 41, [(GRIME, 2, (2.0, 4.0)), (mat("Scuff", "c7c3b8", 0.6), 1, (4.0, 7.0))], {"Paint"},
+            bottom_bias=2.5, sides=("x", "x", "y"), size=(0.012, 0.03))
+
+    def sidewall(name, W, rim_r):
+        w = W / 2
+        ring(name + "_Mark", (0.985 * w, 0, 0), X, rim_r + 0.03, rim_r + 0.048, 0.004, MARK, seg=18, sides=(1,))
+    RIM = mat("RimPaint", "c9ccd2", 0.25, metal=1.0)
+    wk = dict(R=WR, rim_r=0.15, tread="slick", rim_style="race", rim_paint=RIM, steps=18, rim_steps=14, cap=ACCENT,
+              extra=sidewall)
+    wheels = place_wheels([("WheelFL", FT, FY, WR), ("WheelFR", -FT, FY, WR)], W=0.2, **wk)
+    wheels += place_wheels([("WheelRL", RT, RY, WR), ("WheelRR", -RT, RY, WR)], W=0.30, **wk)
+    steering = build_steering(STEER, STEER_AX, R=0.06, spokes=4)
+    seat = empty("Seat", SEAT)
+    objs = [body, *wheels, steering, seat]
+    return objs, {"wheel_radius": WR}, SEAT
+
+
+def flame_shape(L, h, tongues):
+    """Flame decal outline: flat front edge at u=0 spanning v in [-h, h], tongues licking back (+u).
+    tongues: [(v_centre, length, half_thickness)] from top to bottom."""
+    pts = [(0.0, -h), (0.0, h)]
+    prev_v = h
+    for i, (c, ln, t) in enumerate(tongues):
+        valley_u = L * (0.28 + 0.1 * (i % 2))
+        top_v = min(prev_v, c + t)
+        pts.append((valley_u, top_v))
+        pts.append((ln * 0.62, c + t * 0.55))
+        pts.append((ln, c - t * 0.2))          # tip, drooping a little
+        pts.append((ln * 0.55, c - t * 0.75))
+        prev_v = c - t
+    pts.append((L * 0.3, -h))
+    return pts
+
+
+def build_monster_truck():
+    PAINT = mat("Paint", "1f63e6", 0.28, coat=0.8)
+    FLAME1 = mat("FlameOrange", "ff6a12", 0.3, coat=0.6)
+    FLAME2 = mat("FlameYellow", "ffd21a", 0.3, coat=0.6)
+    FRAME = mat("Frame", "2c2e33", 0.4, metal=0.6)
+    SPRING = mat("Spring", "ff7a14", 0.35, coat=0.5)
+    MUD = mat("Mud", "5b4631", 0.95)
+    RIMP = mat("RimPaint", "c8ff2e", 0.3, coat=0.6)
+
+    WR = 0.55
+    TR = 0.80
+    FY, RY = -0.95, 0.95
+    HW = 0.56
+    zb = 1.00
+    BELT, ROOF0, ROOF1 = 1.40, 1.69, 1.75
+    SEAT = Vector((0.0, 0.03, 1.14))
+    STEER = SEAT + Vector((0, -0.29, 0.10))
+    STEER_AX = Vector((0, 0.6, 0.8))
+    WS0, WS1 = -0.38, -0.17
+    CB = 0.32                    # cab back
+    BED0, BED1 = 0.36, 1.28
+
+    new_group()
+    # ---------- chassis: tube frame, axles with pumpkins, 4-links, coilovers
+    for s in (-1, 1):
+        tube("FrameRail", [(s * 0.32, -1.30, 0.88), (s * 0.32, -0.6, 0.86), (s * 0.32, 0.6, 0.86), (s * 0.32, 1.30, 0.9)],
+             0.04, FRAME, sides=4, rad=0.0)
+    for y in (-1.15, -0.45, 0.45, 1.15):
+        tube("CrossTube", [(-0.32, y, 0.87), (0.32, y, 0.87)], 0.03, FRAME, sides=4, rad=0.0)
+    for yy in (FY, RY):
+        cyl("AxleTube", (-TR + 0.2, yy, WR), (TR - 0.2, yy, WR), 0.06, CHROME, seg=8)
+        ball("Pumpkin", (0.0, yy, WR), 0.13, CHROME, seg=8, rings_=5)
+        cyl("PumpkinCover", (0.0, yy - math.copysign(0.09, -yy), WR), (0.0, yy - math.copysign(0.14, -yy), WR), 0.09,
+            FRAME, seg=10)
+        for s in (-1, 1):
+            cyl("HubCarrier", (s * (TR - 0.2), yy, WR), (s * (TR - 0.12), yy, WR), 0.1, FRAME, seg=6)
+            # trailing links up to the frame
+            tube("Link", [(s * 0.28, yy, WR - 0.05), (s * 0.32, yy * 0.45, 0.82)], 0.022, FRAME, sides=5, rad=0.0)
+            # coilover: black body, chrome shaft, orange spring rings
+            top = Vector((s * 0.45, yy - math.copysign(0.12, yy), 1.02))
+            bot = Vector((s * 0.52, yy, WR + 0.08))
+            d = (top - bot).normalized()
+            cyl("ShockBody", bot, bot + d * 0.22, 0.035, BLACK, seg=5)
+            cyl("ShockRod", bot + d * 0.2, top, 0.015, CHROME, seg=5, caps=(False, False))
+            for k in range(4):
+                ring("SpringCoil", bot + d * (0.07 + k * 0.05), d, 0.045, 0.062, 0.024, SPRING, seg=8, sides=(0,))
+            box("ShockMount", top, (0.06, 0.06, 0.06), FRAME, bevel=0.0)
+    tube("Driveshaft", [(0, FY + 0.15, WR + 0.02), (0, -0.3, 0.8)], 0.03, CHROME, sides=6, rad=0.0)
+    tube("Driveshaft", [(0, RY - 0.15, WR + 0.02), (0, 0.3, 0.8)], 0.03, CHROME, sides=6, rad=0.0)
+    bbox("Transfer", (-0.15, -0.35, 0.72), (0.15, 0.35, 0.9), FRAME, bevel=0.02)
+    # ---------- body shell: hood/fenders, doors, bed (blue, rounded shoulders)
+    hood = [(-1.30, zb + 0.02), (WS0, zb), (WS0, BELT), (-1.22, 1.355), (-1.30, 1.32)]
+    shoulder_prism("Hood", hood, HW, PAINT, inset=0.06, drop=0.05, z_lo=1.25, z_hi=1.36, bevel=0.025, seg=2)
+    for s in (-1, 1):
+        dprof = [(WS0 - 0.01, zb), (CB, zb), (CB, BELT), (WS0 - 0.01, BELT)]
+        prism("Door", dprof, s * (HW - 0.05), s * HW, PAINT, bevel=0.02, seg=1)
+        prism("BedSide", [(BED0, zb), (BED1, zb), (BED1, 1.38), (BED0, 1.38)], s * (HW - 0.05), s * HW, PAINT,
+              bevel=0.02, seg=1)
+        beam("DoorSeam", (s * (HW + 0.002), CB - 0.03, zb + 0.03), (s * (HW + 0.002), CB - 0.03, BELT - 0.01), 0.004,
+             0.007, BLACK, side=Y, bevel=0)
+        box("DoorHandle", (s * (HW + 0.008), CB - 0.1, BELT - 0.06), (0.016, 0.08, 0.022), CHROME, bevel=0.0)
+        # flames: orange outer, yellow core, licking back from the nose
+        tongues = [(0.10, 0.95, 0.06), (0.0, 0.7, 0.05), (-0.09, 1.25, 0.06), (-0.17, 0.6, 0.04)]
+        f1 = flame_shape(1.0, 0.2, tongues)
+        f2 = [(u * 0.78, v * 0.72) for u, v in flame_shape(1.0, 0.2, tongues)]
+        o = Vector((s * HW, -1.28, 1.17))
+        flat_poly("Flame", [(s * u, v) for u, v in f1], o, (0, s, 0), Z, FLAME1)
+        flat_poly("FlameCore", [(s * u, v) for u, v in f2], o, (0, s, 0), Z, FLAME2, lift=0.0045)
+        # step bar + mirror
+        tube("NerfBar", [(s * (HW - 0.02), -0.3, zb + 0.02), (s * (HW + 0.06), -0.25, zb - 0.06),
+                         (s * (HW + 0.06), 0.25, zb - 0.06), (s * (HW - 0.02), 0.3, zb + 0.02)], 0.025, CHROME, sides=5,
+             rad=0.05, n=1)
+        beam("MirrorArm", (s * (HW - 0.02), WS0 + 0.04, BELT + 0.02), (s * (HW + 0.07), WS0 + 0.03, BELT + 0.07), 0.015,
+             0.015, CHROME, side=Y, bevel=0.0)
+        box("Mirror", (s * (HW + 0.09), WS0 + 0.03, BELT + 0.09), (0.04, 0.03, 0.09), BLACK, bevel=0.0)
+    bbox("BedFloor", (-HW + 0.04, BED0, zb), (HW - 0.04, BED1, zb + 0.06), FRAME, bevel=0.0)
+    bbox("Tailgate", (-HW, BED1 - 0.04, zb), (HW, BED1, 1.38), PAINT, bevel=0.02)
+    bbox("BedFront", (-HW, BED0, zb), (HW, BED0 + 0.04, 1.38), PAINT, bevel=0.02)
+    bbox("CabFloor", (-HW + 0.04, WS0, zb), (HW - 0.04, CB, zb + 0.04), BLACK, bevel=0.0)
+    # ---------- cab greenhouse: pillars, roof, glass front/back, open side windows
+    for s in (-1, 1):
+        beam("APillar", (s * (HW - 0.035), WS0 + 0.01, BELT), (s * (HW - 0.06), WS1, ROOF0), 0.05, 0.05, PAINT,
+             bevel=0.012)
+        beam("BPillar", (s * (HW - 0.04), CB - 0.025, BELT), (s * (HW - 0.06), CB - 0.025, ROOF0), 0.07, 0.05, PAINT,
+             bevel=0.0)
+    bbox("CabBack", (-HW + 0.05, CB - 0.05, BELT), (HW - 0.05, CB, ROOF0), PAINT, bevel=0.0)
+    shaped_box("Roof", lambda sx, sy, sz: (sx * (HW - (0.04 if sz < 0 else 0.06)), (WS1 - 0.02 if sz > 0 else WS1 - 0.03)
+               if sy < 0 else CB + 0.01, ROOF0 - 0.01 if sz < 0 else ROOF1), PAINT, bevel=0.03, seg=2)
+    bm = bmesh.new()
+    bm.faces.new([bm.verts.new(p) for p in [(-HW + 0.06, WS0 + 0.02, BELT + 0.005), (HW - 0.06, WS0 + 0.02, BELT + 0.005),
+                                            (HW - 0.08, WS1 - 0.01, ROOF0 - 0.01), (-HW + 0.08, WS1 - 0.01, ROOF0 - 0.01)]])
+    finish_obj("Windshield", bm, WINDOW, smooth=False)
+    # KC light bar on the roof
+    bbox("LightRack", (-0.42, -0.05, ROOF1), (0.42, -0.01, ROOF1 + 0.03), CHROME, bevel=0.0)
+    for x in (-0.32, -0.11, 0.11, 0.32):
+        cyl("KCLight", (x, -0.03, ROOF1 + 0.1), (x, -0.08, ROOF1 + 0.1), 0.07, BLACK, seg=8, r1=0.075)
+        disc("KCCover", (x, -0.081, ROOF1 + 0.1), -Y, 0.07, AMBER, seg=8)
+        box("KCPost", (x, -0.03, ROOF1 + 0.035), (0.025, 0.025, 0.05), CHROME, bevel=0.0)
+    # interior
+    bbox("Dash", (-HW + 0.05, WS0 - 0.01, BELT - 0.14), (HW - 0.05, WS0 + 0.1, BELT + 0.02), BLACK, bevel=0.02)
+    seat_block(SEAT, 0.34, 0.28, SEATM, back_h=0.42, tilt=-8, base_h=SEAT.z - 0.07 - zb - 0.04, base_m=BLACK,
+               bolster=False)
+    col_end = STEER - STEER_AX * 0.03
+    cyl("Column", col_end - STEER_AX * 0.22, col_end, 0.018, BLACK, seg=6, caps=(False, True))
+    # roll cage hoop in the bed
+    tube("BedCage", [(-0.42, BED0 + 0.1, zb + 0.05), (-0.42, BED0 + 0.12, 1.62), (0.42, BED0 + 0.12, 1.62),
+                     (0.42, BED0 + 0.1, zb + 0.05)], 0.03, CHROME, sides=6, rad=0.1, n=2)
+    for s in (-1, 1):
+        tube("CageBrace", [(s * 0.4, BED0 + 0.13, 1.55), (s * 0.42, BED1 - 0.08, zb + 0.08)], 0.025, CHROME, sides=6,
+             rad=0.0)
+    # ---------- nose: chrome grille, quad lamps, tube bumper; blower through the hood
+    ny = -1.30
+    bbox("Grille", (-0.33, ny - 0.02, 1.07), (0.33, ny + 0.01, 1.28), CHROME, bevel=0.012)
+    for i in range(4):
+        z = 1.10 + i * 0.045
+        bbox("GrilleSlot", (-0.30, ny - 0.03, z), (0.30, ny - 0.02, z + 0.022), BLACK, bevel=0.0)
+    for s in (-1, 1):
+        for x in (s * 0.40, s * 0.50):
+            cyl("LampBezel", (x, ny + 0.005, 1.20), (x, ny - 0.02, 1.20), 0.055, CHROME, seg=8, caps=(False, False))
+            disc("Headlamp", (x, ny - 0.015, 1.20), -Y, 0.045, HEADLIGHT, seg=8)
+        box("Indicator", (s * 0.45, ny - 0.01, 1.10), (0.16, 0.03, 0.04), AMBER, bevel=0.0)
+    tube("Bumper", [(-0.6, ny + 0.1, 0.98), (-0.55, ny - 0.1, 0.98), (0.55, ny - 0.1, 0.98), (0.6, ny + 0.1, 0.98)],
+         0.045, CHROME, sides=6, rad=0.1, n=2)
+    tube("BumperHoop", [(-0.3, ny - 0.1, 0.98), (-0.3, ny - 0.13, 1.12), (0.3, ny - 0.13, 1.12), (0.3, ny - 0.1, 0.98)],
+         0.03, CHROME, sides=6, rad=0.08, n=2)
+    by = -0.85
+    bbox("BlowerBase", (-0.14, by - 0.16, 1.32), (0.14, by + 0.16, 1.40), CHROME, bevel=0.012)
+    bbox("Blower", (-0.12, by - 0.14, 1.40), (0.12, by + 0.14, 1.52), CHROME, bevel=0.02, seg=2)
+    for k in range(5):
+        y = by - 0.12 + k * 0.06
+        bbox("BlowerRib", (-0.125, y - 0.008, 1.41), (0.125, y + 0.008, 1.515), METAL, bevel=0.0)
+    shaped_box("Scoop", lambda sx, sy, sz: (sx * (0.13 if sz < 0 else 0.11), (by - 0.16 if sz < 0 else by - 0.2) if sy < 0
+               else by + 0.12, 1.52 if sz < 0 else 1.64), BLACK, bevel=0.015, seg=1)
+    bbox("ScoopMouth", (-0.09, by - 0.205, 1.55), (0.09, by - 0.19, 1.62), FRAME, bevel=0.0)
+    for s in (-1, 1):
+        cyl("Stack", (s * 0.40, CB + 0.08, zb + 0.1), (s * 0.40, CB + 0.08, 1.95), 0.035, CHROME, seg=8,
+            caps=(True, False))
+        cyl("StackTip", (s * 0.40, CB + 0.08, 1.95), (s * 0.40, CB + 0.11, 2.0), 0.035, CHROME, seg=8, r1=0.045,
+            caps=(False, False))
+    # tail lights
+    for s in (-1, 1):
+        bbox("TailLamp", (min(s * 0.42, s * 0.54), BED1, 1.18), (max(s * 0.42, s * 0.54), BED1 + 0.015, 1.32),
+             TAILLIGHT, bevel=0.0)
+    text("Tailgate", "MONSTER", 0.12, (0, BED1, 1.24), (-1, 0, 0), Z, FLAME2, font="Arial Black.ttf", res=1)
+
+    body = collapse("Body", GROUP)
+    weather(body, 12, 51, [(MUD, 3, (1.5, 3.5))], {"Paint", "FlameOrange", "FlameYellow"}, bottom_bias=3.0,
+            sides=("x", "x", "y"), size=(0.025, 0.06))
+
+    wk = dict(R=WR, W=0.46, rim_r=0.26, tread="monster", rim_style="beadlock", rim_paint=RIMP, steps=18, rim_steps=14,
+              cap=CHROME, depth=0.05)
+    wheels = place_wheels([("WheelFL", TR, FY, WR), ("WheelFR", -TR, FY, WR), ("WheelRL", TR, RY, WR),
+                           ("WheelRR", -TR, RY, WR)], **wk)
+    steering = build_steering(STEER, STEER_AX, R=0.075)
+    seat = empty("Seat", SEAT)
+    objs = [body, *wheels, steering, seat]
+    return objs, {"wheel_radius": WR}, SEAT
+
+
+def octagon(r):
+    return [(math.cos(pi / 8 + k * pi / 4) * r, math.sin(pi / 8 + k * pi / 4) * r) for k in range(8)]
+
+
+def build_ice_cream_truck():
+    MINT = mat("Paint", "8fdcc0", 0.32, coat=0.7)
+    CREAM = mat("Cream", "fff1d8", 0.35, coat=0.6)
+    PINK = mat("Pink", "ff8fc0", 0.32, coat=0.6)
+    SKY = mat("SkyBlue", "8cc9ff", 0.32, coat=0.6)
+    CONE = mat("Waffle", "e3b066", 0.6)
+    CONE2 = mat("WaffleDark", "bf8740", 0.65)
+    SCOOP = mat("Strawberry", "ffb0cf", 0.45, coat=0.3)
+    CHERRY = mat("Cherry", "d81b33", 0.15, coat=0.8)
+    INTERIOR = mat("Interior", "d9cdb8", 0.6)
+    STOP = mat("StopRed", "d62030", 0.3, coat=0.5)
+    CHOC = mat("Chocolate", "6b3b22", 0.4, coat=0.3)
+    STICK = mat("Stick", "e8cf9a", 0.7)
+
+    WR = 0.27
+    FY, RY = -1.02, 0.86
+    TR = 0.44
+    HW = 0.52
+    zb = 0.22
+    FLOOR = 0.30
+    BELT = 0.70            # mint below, cream above
+    ROOF0, ROOF1 = 1.36, 1.44
+    CAB0, CAB1 = -1.05, -0.30
+    BOX1 = 1.32
+    SEAT = Vector((0.22, -0.56, 0.58))
+    STEER = SEAT + Vector((0, -0.29, 0.10))
+    STEER_AX = Vector((0, 0.42, 0.9))
+    WIN0, WIN1, WZ0, WZ1 = -0.20, 0.46, 0.74, 1.14   # serving window
+    CONE_Y = 0.55
+
+    new_group()
+    # ---------- short rounded hood + grille + bumper
+    hood = [(-1.38, zb + 0.02)] + arch(FY, WR, 0.32, zb, 7)[:4] + [(CAB0 + 0.02, 0.56), (CAB0 + 0.02, 0.66),
+                                                                  (-1.30, 0.64), (-1.38, 0.58)]
+    hw_h = 0.47
+    shoulder_prism("Hood", hood, hw_h, MINT, inset=0.06, drop=0.05, z_lo=0.5, z_hi=0.66, bevel=0.03, seg=1)
+    ny = -1.38
+    bbox("Grille", (-0.2, ny - 0.015, 0.30), (0.2, ny + 0.01, 0.54), CHROME, bevel=0.015)
+    for k in range(7):
+        x = -0.15 + k * 0.05
+        bbox("GrilleBar", (x - 0.008, ny - 0.025, 0.32), (x + 0.008, ny - 0.012, 0.52), METAL, bevel=0.0)
+    for s in (-1, 1):
+        cyl("LampBezel", (s * 0.34, ny + 0.02, 0.48), (s * 0.34, ny - 0.03, 0.48), 0.07, CHROME, seg=10, caps=(False, True))
+        disc("Headlamp", (s * 0.34, ny - 0.031, 0.48), -Y, 0.055, HEADLIGHT, seg=10)
+        box("Indicator", (s * 0.34, ny - 0.005, 0.35), (0.09, 0.03, 0.04), AMBER, bevel=0.0)
+    shaped_box("Bumper", lambda sx, sy, sz: (sx * (0.50 if sy > 0 else 0.48), ny - (0.09 if sy < 0 else -0.02),
+                                             0.17 if sz < 0 else 0.29), CHROME, bevel=0.03, seg=2)
+    # ---------- cab: lower panels with the front arch, big open doorway either side
+    for s in (-1, 1):
+        lp = [(CAB0, zb)] + [p for p in arch(FY, WR, 0.32, zb, 7) if p[0] >= CAB0 - 1e-6] + [(-0.66, zb), (-0.66, 0.62),
+                                                                                              (CAB0, 0.62)]
+        lp = [(CAB0, 0.62), (CAB0, WR + 0.32 * 0.99)] + [p for p in arch(FY, WR, 0.32, zb, 7) if p[0] > FY] + \
+             [(-0.66, zb), (-0.66, 0.62)]
+        prism("CabPanel", lp, s * (HW - 0.05), s * HW, MINT, bevel=0.02, seg=1)
+        bbox("FrontPost", (min(s * (HW - 0.05), s * HW), CAB0, 0.62), (max(s * (HW - 0.05), s * HW), CAB0 + 0.07, ROOF0),
+             CREAM, bevel=0.015)
+        bbox("DoorPost", (min(s * (HW - 0.05), s * HW), -0.36, zb), (max(s * (HW - 0.05), s * HW), -0.30, ROOF0),
+             MINT, bevel=0.015)
+        bbox("DoorStep", (min(s * (HW - 0.12), s * (HW + 0.02)), -0.66, zb - 0.02), (max(s * (HW - 0.12), s * (HW + 0.02)),
+                                                                                    -0.36, zb + 0.03), ALU, bevel=0.0)
+        arc_band("ArchLipF", FY, WR, 0.32, 0.345, s * (HW - 0.02), s * (HW + 0.012), CREAM, a0=0.2, a1=pi * 0.62,
+                 steps=5, bevel=0.0)
+        tube("GrabBar", [(s * (HW - 0.02), -0.37, 0.4), (s * (HW - 0.02), -0.37, 1.0)], 0.012, CHROME, sides=5, rad=0)
+        beam("MirrorArm", (s * (HW - 0.01), CAB0 + 0.04, 0.95), (s * (HW + 0.08), CAB0 - 0.02, 0.95), 0.015, 0.015,
+             CHROME, side=Z, bevel=0.0)
+        box("Mirror", (s * (HW + 0.09), CAB0 - 0.02, 0.88), (0.035, 0.04, 0.16), CHROME, bevel=0.008)
+    bbox("Cowl", (-HW, CAB0, 0.56), (HW, CAB0 + 0.08, 0.70), MINT, bevel=0.02)
+    bbox("Floor", (-HW + 0.03, CAB0, zb), (HW - 0.03, BOX1, FLOOR), INTERIOR, bevel=0.0)
+    bbox("Dash", (-HW + 0.05, CAB0 + 0.06, 0.56), (HW - 0.05, CAB0 + 0.16, 0.72), CHOC, bevel=0.02)
+    glass = [(-HW + 0.05, CAB0 + 0.03, 0.71), (HW - 0.05, CAB0 + 0.03, 0.71), (HW - 0.05, CAB0 + 0.09, ROOF0 - 0.02),
+             (-HW + 0.05, CAB0 + 0.09, ROOF0 - 0.02)]
+    bm = bmesh.new()
+    bm.faces.new([bm.verts.new(p) for p in glass])
+    finish_obj("Windshield", bm, WINDOW, smooth=False)
+    beam("Pillar", (0, CAB0 + 0.03, 0.70), (0, CAB0 + 0.09, ROOF0), 0.03, 0.03, CREAM, bevel=0.0)
+    seat_block(SEAT, 0.28, 0.26, PINK, back_h=0.34, tilt=-8, base_h=SEAT.z - 0.07 - FLOOR, base_m=CHROME, bolster=False)
+    col_end = STEER - STEER_AX * 0.03
+    cyl("Column", col_end - STEER_AX * 0.3, col_end, 0.02, BLACK, seg=6, caps=(False, True))
+    bbox("Bulkhead", (-HW + 0.03, -0.36, FLOOR), (HW - 0.03, -0.31, ROOF0), CREAM, bevel=0.0)
+    # ---------- box body: mint lower, cream upper, pink belt stripe, serving windows both sides
+    for s in (-1, 1):
+        x0, x1 = min(s * (HW - 0.05), s * HW), max(s * (HW - 0.05), s * HW)
+        low = [(-0.31, zb)] + arch(RY, WR, 0.32, zb, 7) + [(BOX1, zb), (BOX1, BELT), (-0.31, BELT)]
+        prism("BoxLower", low, s * (HW - 0.05), s * HW, MINT, bevel=0.02, seg=1)
+        arc_band("ArchLipR", RY, WR, 0.32, 0.345, s * (HW - 0.02), s * (HW + 0.012), CREAM, a0=0.08, a1=pi - 0.08,
+                 steps=6, bevel=0.0)
+        bbox("BoxUpperF", (x0, -0.31, BELT), (x1, WIN0, ROOF0), CREAM, bevel=0.012)
+        bbox("BoxUpperR", (x0, WIN1, BELT), (x1, BOX1, ROOF0), CREAM, bevel=0.012)
+        bbox("BoxHeader", (x0, WIN0, WZ1), (x1, WIN1, ROOF0), CREAM, bevel=0.0)
+        bbox("BoxSill", (x0, WIN0, BELT), (x1, WIN1, WZ0), CREAM, bevel=0.0)
+        # pink belt stripe all the way round
+        bbox("BeltStripe", (min(s * HW, s * (HW + 0.008)), -0.31, BELT - 0.02), (max(s * HW, s * (HW + 0.008)), BOX1,
+                                                                                 BELT + 0.03), PINK, bevel=0.0)
+        bbox("CabStripe", (min(s * HW, s * (HW + 0.008)), -0.66, BELT - 0.09), (max(s * HW, s * (HW + 0.008)), -0.36,
+                                                                                BELT - 0.04), PINK, bevel=0.0)
+        # serving counter + window frame + half-open sliding glass
+        bbox("Counter", (min(s * (HW - 0.06), s * (HW + 0.09)), WIN0 - 0.02, WZ0 - 0.03),
+             (max(s * (HW - 0.06), s * (HW + 0.09)), WIN1 + 0.02, WZ0), CREAM, bevel=0.008)
+        for y in (WIN0, WIN1):
+            bbox("WinFrame", (min(s * (HW - 0.01), s * (HW + 0.01)), y - 0.015, WZ0), (max(s * (HW - 0.01),
+                                                                                          s * (HW + 0.01)), y + 0.015,
+                                                                                      WZ1), CHROME, bevel=0.0)
+        g = [(s * (HW - 0.03), WIN1 - 0.01, WZ0 + 0.01), (s * (HW - 0.03), (WIN0 + WIN1) / 2 + 0.05, WZ0 + 0.01),
+             (s * (HW - 0.03), (WIN0 + WIN1) / 2 + 0.05, WZ1 - 0.01), (s * (HW - 0.03), WIN1 - 0.01, WZ1 - 0.01)]
+        bm = bmesh.new()
+        bm.faces.new([bm.verts.new(p) for p in g])
+        finish_obj("SlideGlass", bm, WINDOW, smooth=False)
+        # striped scalloped awning over the window
+        n = 8
+        aw0, aw1 = WIN0 - 0.04, WIN1 + 0.04
+        for k in range(n):
+            ya, yb = aw0 + (aw1 - aw0) * k / n, aw0 + (aw1 - aw0) * (k + 1) / n
+            m = PINK if k % 2 == 0 else CREAM
+            pts = [(s * (HW + 0.005), ya, WZ1 + 0.14), (s * (HW + 0.005), yb, WZ1 + 0.14),
+                   (s * (HW + 0.17), yb, WZ1 + 0.04), (s * (HW + 0.17), (ya + yb) / 2, WZ1 + 0.0),
+                   (s * (HW + 0.17), ya, WZ1 + 0.04)]
+            bm = bmesh.new()
+            bm.faces.new([bm.verts.new(p) for p in pts])
+            finish_obj("Awning", bm, m, smooth=False)
+        for y in (aw0 + 0.02, aw1 - 0.02):
+            beam("AwningArm", (s * HW, y, WZ1 - 0.06), (s * (HW + 0.16), y, WZ1 + 0.03), 0.01, 0.01, CHROME, side=Y,
+                 bevel=0.0)
+        # popsicle menu under the window
+        for k, (m, top) in enumerate(((PINK, CHOC), (SKY, CREAM), (CHOC, PINK), (CHERRY, CREAM))):
+            yc = WIN0 + 0.08 + k * 0.165
+            o = Vector((s * HW, yc, 0.47))
+            flat_poly("MenuCard", rrect(0, 0, 0.065, 0.1, 0.02, n=1), o, (0, s, 0), Z, CREAM, lift=0.003)
+            flat_poly("Pop", rrect(0, 0.02, 0.03, 0.05, 0.028, n=2), o, (0, s, 0), Z, m, lift=0.005)
+            flat_poly("PopDip", [(x, z) for x, z in rrect(0, 0.05, 0.03, 0.022, 0.02, n=2)], o, (0, s, 0), Z, top,
+                      lift=0.006)
+            flat_poly("PopStick", [(-0.006, -0.07), (0.006, -0.07), (0.006, -0.03), (-0.006, -0.03)], o, (0, s, 0), Z,
+                      STICK, lift=0.005)
+        flat_poly("SignBoard", rrect(0, 0, 0.36, 0.16, 0.07, n=2), (s * HW, 0.89, 1.0), (0, s, 0), Z, PINK, lift=0.003)
+        flat_poly("SignEdge", rrect(0, 0, 0.375, 0.175, 0.08, n=2), (s * HW, 0.89, 1.0), (0, s, 0), Z, SKY, lift=0.0015)
+        text("Sign", "ICE", 0.12, (s * HW, 0.89, 1.065), (0, s, 0), Z, CREAM, font="Arial Rounded Bold.ttf", res=1)
+        text("Sign", "CREAM", 0.12, (s * HW, 0.89, 0.935), (0, s, 0), Z, CREAM, font="Arial Rounded Bold.ttf", res=1)
+    # stop arm folded against the left side, behind the driver's doorway
+    o = Vector((HW + 0.02, -0.22, 0.95))
+    beam("StopArm", (HW, -0.30, 0.95), (HW + 0.02, -0.16, 0.95), 0.02, 0.02, BLACK, side=Z, bevel=0.0)
+    flat_poly("StopSign", octagon(0.085), o, Y, Z, STOP, lift=0.0)
+    flat_poly("StopRim", octagon(0.072), o, Y, Z, CREAM, lift=0.002)
+    flat_poly("StopIn", octagon(0.064), o, Y, Z, STOP, lift=0.004)
+    text("StopText", "STOP", 0.045, o, Y, Z, CREAM, font="Arial Black.ttf", lift=0.006, res=1)
+    # interior: freezer chest + soft-serve machine visible through the windows
+    bbox("Freezer", (-0.32, -0.20, FLOOR), (0.32, 0.45, 0.68), SKY, bevel=0.02)
+    bbox("FreezerLid", (-0.30, -0.18, 0.68), (0.30, 0.43, 0.70), WINDOW, bevel=0.0)
+    for k, m in enumerate((PINK, CREAM, CHOC, SKY)):
+        bbox("Tub", (-0.26 + k * 0.13, 0.0, 0.62), (-0.16 + k * 0.13, 0.12, 0.67), m, bevel=0.0)
+    bbox("SoftServe", (-0.18, 0.62, FLOOR), (0.18, 0.95, 1.05), CHROME, bevel=0.02)
+    for x in (-0.08, 0.08):
+        cyl("Tap", (x, 0.62, 0.86), (x, 0.58, 0.82), 0.02, CHROME, seg=6)
+    # ---------- roof (cream, rounded shoulders, slight overhang) + chime speaker + cone holder
+    roof = [(CAB0 - 0.03, ROOF0), (BOX1 + 0.02, ROOF0), (BOX1 + 0.02, ROOF1 - 0.02), (BOX1 - 0.02, ROOF1),
+            (CAB0 + 0.02, ROOF1), (CAB0 - 0.03, ROOF1 - 0.03)]
+    shoulder_prism("Roof", roof, HW + 0.02, mat("RoofPink", "ffc4dd", 0.32, coat=0.6), inset=0.05, drop=0.03,
+                   z_lo=ROOF0, z_hi=ROOF1, bevel=0.02, seg=2)
+    cyl("Speaker", (0.0, CAB0 + 0.22, ROOF1 + 0.07), (0.0, CAB0 + 0.0, ROOF1 + 0.07), 0.025, CHROME, seg=8, r1=0.07,
+        caps=(True, False))
+    box("SpeakerMount", (0.0, CAB0 + 0.16, ROOF1 + 0.03), (0.04, 0.06, 0.06), CHROME, bevel=0.0)
+    for x in (-0.3, 0.3):
+        box("Marker", (x, CAB0 + 0.0, ROOF1 - 0.02), (0.06, 0.02, 0.025), AMBER, bevel=0.0)
+    # ---------- the giant cone: waffle cone, strawberry soft-serve swirl, sprinkles and a cherry
+    cb = Vector((0.0, CONE_Y, ROOF1))
+    cyl("ConeCup", cb, cb + Z * 0.06, 0.12, CHROME, seg=12, r1=0.10)
+    SC = 1.2
+    cone_h, cone_r = 0.46 * SC, 0.22 * SC
+    prof = [(0.0, 0.03), (cone_h * 0.2, cone_r * 0.22), (cone_h * 0.4, cone_r * 0.4), (cone_h * 0.6, cone_r * 0.6),
+            (cone_h * 0.8, cone_r * 0.8), (cone_h, cone_r)]
+    vlathe("Cone", prof, cb + Z * 0.02, [CONE, CONE2], steps=16, face_mat=lambda i, k: (i + k) % 2)
+    rim_c = cb + Z * (0.02 + cone_h)
+    ring("ConeRim", rim_c, Z, cone_r * 0.85, cone_r + 0.02, 0.05, CONE, seg=16, sides=(0, 1, 3))
+    swirl = [(h * SC, r * SC) for h, r in [(0.0, 0.215), (0.05, 0.245), (0.11, 0.225), (0.14, 0.17), (0.17, 0.2),
+                                           (0.22, 0.185), (0.26, 0.13), (0.29, 0.15), (0.33, 0.13), (0.37, 0.08),
+                                           (0.41, 0.07), (0.45, 0.035), (0.50, 0.012)]]
+    vlathe("Swirl", swirl, rim_c + Z * 0.01, SCOOP, steps=16)
+    # sprinkles scattered over the swirl
+    rnd = random.Random(9)
+    cols = [SKY, CREAM, mat("SprinkleYellow", "ffe14a", 0.4), MINT, CHERRY]
+    for k in range(22):
+        t = rnd.uniform(0.02, 0.36) * SC
+        r = None
+        for (h0, r0), (h1, r1) in zip(swirl, swirl[1:]):
+            if h0 <= t <= h1:
+                r = r0 + (r1 - r0) * (t - h0) / (h1 - h0)
+        a = rnd.uniform(0, 2 * pi)
+        p = rim_c + Z * (0.01 + t) + Vector((math.cos(a), math.sin(a), 0)) * (r + 0.004)
+        box("Sprinkle", p, (0.012, 0.035, 0.012), cols[k % len(cols)], bevel=0.0,
+            rot=(rnd.uniform(0, 180), rnd.uniform(0, 180), rnd.uniform(0, 180)))
+    top = rim_c + Z * 0.52 * SC
+    ball("Cherry", top + Z * 0.04, 0.055, CHERRY, seg=10, rings_=6)
+    tube("CherryStem", [top + Z * 0.09, top + Z * 0.14 + Y * 0.02, top + Z * 0.17 + Y * 0.07], 0.007, CHOC, sides=4,
+         rad=0.03, n=2)
+    # ---------- rear: door with window, lights, bumper, ladder
+    ry = BOX1
+    bbox("RearWall", (-HW, ry - 0.04, zb), (HW, ry, ROOF0), CREAM, bevel=0.015)
+    bbox("RearLower", (-HW, ry - 0.045, zb), (HW, ry + 0.002, BELT), MINT, bevel=0.012)
+    bbox("RearStripe", (-HW, ry, BELT - 0.02), (HW, ry + 0.008, BELT + 0.03), PINK, bevel=0.0)
+    bbox("RearDoor", (-0.24, ry, 0.3), (0.24, ry + 0.012, 1.25), CREAM, bevel=0.006)
+    bm = bmesh.new()
+    bm.faces.new([bm.verts.new(p) for p in [(-0.18, ry + 0.014, 0.9), (0.18, ry + 0.014, 0.9), (0.18, ry + 0.014, 1.18),
+                                            (-0.18, ry + 0.014, 1.18)]])
+    finish_obj("RearWindow", bm, mat("DarkGlass", "1e2a33", 0.05), smooth=False)
+    box("RearHandle", (0.17, ry + 0.02, 0.72), (0.08, 0.02, 0.025), CHROME, bevel=0.0)
+    for s in (-1, 1):
+        cyl("TailLamp", (s * 0.40, ry, 0.52), (s * 0.40, ry + 0.02, 0.52), 0.045, TAILLIGHT, seg=10, caps=(False, True))
+        cyl("TailLamp2", (s * 0.40, ry, 0.40), (s * 0.40, ry + 0.02, 0.40), 0.035, AMBER, seg=8, caps=(False, True))
+    shaped_box("RearBumper", lambda sx, sy, sz: (sx * 0.5, ry + (0.08 if sy > 0 else -0.01), 0.17 if sz < 0 else 0.28),
+               CHROME, bevel=0.025, seg=1)
+    cyl("AxleF", (-TR, FY, WR), (TR, FY, WR), 0.035, BLACK, seg=6, caps=(False, False))
+    cyl("AxleR", (-TR, RY, WR), (TR, RY, WR), 0.045, BLACK, seg=6, caps=(False, False))
+
+    body = collapse("Body", GROUP)
+    weather(body, 10, 61, [(GRIME, 3, (2.0, 3.5)), (RUST, 1, (1.0, 1.5))], {"Paint", "Cream"}, bottom_bias=3.0,
+            sides=("x", "x", "y"), size=(0.015, 0.035))
+
+    wk = dict(R=WR, W=0.2, rim_r=0.16, tread="road", rim_style="dog", rim_paint=SKY, steps=16, rim_steps=12, lugs=5,
+              cap=CHROME, grooves=2)
+    wheels = place_wheels([("WheelFL", TR, FY, WR), ("WheelFR", -TR, FY, WR), ("WheelRL", TR, RY, WR),
+                           ("WheelRR", -TR, RY, WR)], **wk)
+    steering = build_steering(STEER, STEER_AX, R=0.085, rim_m=PINK)
+    seat = empty("Seat", SEAT)
+    objs = [body, *wheels, steering, seat]
+    return objs, {"wheel_radius": WR}, SEAT
+
+
 VEHICLES = {
     "fire_truck": build_fire_truck,
     "police_car": build_police_car,
     "garbage_truck": build_garbage_truck,
+    "race_car": build_race_car,
+    "monster_truck": build_monster_truck,
+    "ice_cream_truck": build_ice_cream_truck,
 }
 
 
