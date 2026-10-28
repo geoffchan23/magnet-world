@@ -76,7 +76,7 @@ func shatter(impact: Vector3, push: Vector3, strength: float, reach: float) -> v
 		var xf: Transform3D = t.xform
 		var body := RigidBody3D.new()
 		body.collision_layer = DEBRIS_LAYER
-		body.collision_mask = 1 | 2 | DEBRIS_LAYER | HITTER_LAYER
+		body.collision_mask = 1 | 2 | DEBRIS_LAYER | HITTER_LAYER | 32 | 64  # + the buggy and loose junk
 		body.mass = 0.4
 		var phys := PhysicsMaterial.new()
 		phys.bounce = 0.25

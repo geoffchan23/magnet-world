@@ -16,7 +16,7 @@ const SAVE_PATH := "user://world.json"
 const SETTINGS_PATH := "user://settings.json"
 const CHARACTERS := ["kid", "fox", "robot", "dino"]
 const CHARACTER_NAMES := {"kid": "Kid", "fox": "Fox", "robot": "Robot", "dino": "Dino"}
-const BUILD_R := 12.5  # radius of the flat build area on the main island
+const BUILD_R := 12.5  # radius of the build area in the middle of the lot
 const ITEMS := {
 	"couch": {"name": "Our Living Room Couch", "scene": "res://assets/items/couch.glb",
 		"icon": "res://assets/items/couch.png", "scale": 0.5},
@@ -60,6 +60,9 @@ var shown_tilt := 0.0
 var bad_mat: StandardMaterial3D
 
 var player: CharacterBody3D
+var city: Node3D  # city.gd
+var buggy: VehicleBody3D  # vehicle.gd
+var driving := false
 var sfx: AudioStreamPlayer
 var click_snd: AudioStreamWAV
 var pop_snd: AudioStreamWAV
@@ -137,6 +140,7 @@ func _ready() -> void:
 	setup_ghost()
 	setup_audio()
 	setup_player()
+	setup_buggy()
 	destroyer = Node3D.new()
 	destroyer.set_script(preload("res://destroy.gd"))
 	destroyer.main = self
@@ -160,6 +164,12 @@ func _ready() -> void:
 			destroyer.start.call_deferred(a.substr(8))
 		elif a == "--walk":
 			player.auto_walk = true
+		elif a.begins_with("--buggy="):
+			var v := a.substr(8).split_floats(",")  # x,z,heading in degrees
+			buggy.global_transform = Transform3D(Basis(Vector3.UP, deg_to_rad(v[2])), Vector3(v[0], 0.4, v[1]))
+		elif a == "--drive":
+			set_play(true)
+			enter_buggy()
 	if "--play" in OS.get_cmdline_user_args():
 		set_play(true)
 	refresh_ui()
@@ -172,98 +182,55 @@ func _ready() -> void:
 func setup_world() -> void:
 	var env := Environment.new()
 	var sky_mat := PanoramaSkyMaterial.new()
-	sky_mat.panorama = load("res://assets/textures/sky.hdr")
-	sky_mat.energy_multiplier = 1.1
+	sky_mat.panorama = load("res://assets/textures/wasteland_sky.hdr")
+	sky_mat.energy_multiplier = 1.0
 	var sky := Sky.new()
 	sky.sky_material = sky_mat
 	sky.radiance_size = Sky.RADIANCE_SIZE_128
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.8
+	env.ambient_light_energy = 0.75
 	env.reflected_light_source = Environment.REFLECTION_SOURCE_SKY
 	env.tonemap_mode = Environment.TONE_MAPPER_FILMIC
-	env.tonemap_exposure = 1.0
+	env.tonemap_exposure = 1.05
 	env.glow_enabled = true
 	env.glow_intensity = 0.4
 	env.glow_hdr_threshold = 1.2
+	# Dusty haze: the far city fades into it.
 	env.fog_enabled = true
 	env.fog_mode = Environment.FOG_MODE_DEPTH
-	env.fog_light_color = Color("bcd8f5")
-	env.fog_depth_begin = 40.0
-	env.fog_depth_end = 260.0
-	env.fog_density = 0.35
-	env.fog_sky_affect = 0.0
+	env.fog_light_color = Color("cdb894")
+	env.fog_depth_begin = 30.0
+	env.fog_depth_end = 300.0
+	env.fog_depth_curve = 1.6
+	env.fog_density = 0.6
+	env.fog_sky_affect = 0.25
 	env.adjustment_enabled = true
-	env.adjustment_saturation = 1.2
+	env.adjustment_saturation = 1.08
 	var we := WorldEnvironment.new()
 	we.environment = env
 	add_child(we)
 
 	var sun := DirectionalLight3D.new()
-	sun.rotation_degrees = Vector3(-48, -30, 0)
-	sun.light_energy = 1.6
-	sun.light_color = Color("fff3e0")
+	sun.rotation_degrees = Vector3(-38, -35, 0)
+	sun.light_energy = 1.7
+	sun.light_color = Color("ffe6c4")
 	sun.shadow_enabled = true
 	sun.shadow_blur = 1.5
-	sun.directional_shadow_max_distance = 40.0
+	sun.directional_shadow_max_distance = 70.0
 	add_child(sun)
 
-	setup_islands()
-	setup_cloud_sea()
+	city = Node3D.new()
+	city.set_script(preload("res://city.gd"))
+	add_child(city)
+	city.build()
 	scatter_grass.call_deferred()
 
 	cam = Camera3D.new()
 	cam.fov = 55
-	cam.far = 600
+	cam.far = 700
 	add_child(cam)
-
-
-func setup_islands() -> void:
-	var grass := ShaderMaterial.new()
-	grass.shader = load("res://shaders/island_top.gdshader")
-	grass.set_shader_parameter("albedo_tex", load("res://assets/textures/grass_albedo.jpg"))
-	grass.set_shader_parameter("normal_tex", load("res://assets/textures/grass_normal.jpg"))
-	var grass_decor := grass.duplicate()
-	grass_decor.set_shader_parameter("grid_strength", 0.0)
-	var rock := ORMMaterial3D.new()
-	rock.albedo_texture = load("res://assets/textures/rock_albedo.jpg")
-	rock.normal_enabled = true
-	rock.normal_texture = load("res://assets/textures/rock_normal.jpg")
-	rock.orm_texture = load("res://assets/textures/rock_arm.jpg")
-	rock.uv1_triplanar = true
-	rock.uv1_scale = Vector3(0.35, 0.35, 0.35)
-	rock.vertex_color_use_as_albedo = true
-	var bark := rock.duplicate()
-	bark.albedo_color = Color("8a6648")
-	bark.uv1_scale = Vector3(1.2, 1.2, 1.2)
-	var leaves := StandardMaterial3D.new()
-	leaves.albedo_color = Color("5f9e3a")
-	leaves.vertex_color_use_as_albedo = true
-	leaves.roughness = 0.75
-	leaves.backlight_enabled = true
-	leaves.backlight = Color("3d6b1f")
-	var mats := {"Grass": grass, "Rock": rock, "Bark": bark, "Leaves": leaves}
-
-	for path in ["res://assets/islands/main.glb", "res://assets/islands/decor.glb"]:
-		var scene: Node3D = (load(path) as PackedScene).instantiate()
-		add_child(scene)
-		for mi in scene.find_children("*", "MeshInstance3D", true, false):
-			var m: Mesh = (mi as MeshInstance3D).mesh
-			for i in m.get_surface_count():
-				var src := m.surface_get_material(i)
-				var key := src.resource_name if src else ""
-				if mats.has(key):
-					var use: Material = mats[key]
-					if key == "Grass" and path.ends_with("decor.glb"):
-						use = grass_decor
-					(mi as MeshInstance3D).set_surface_override_material(i, use)
-			# Islands are solid ground (you can walk off the edge though!).
-			if (mi as Node).name.contains("Island") or (mi as Node).name.begins_with("Sat"):
-				(mi as MeshInstance3D).create_trimesh_collision()
-				for body in (mi as Node).find_children("*", "StaticBody3D", true, false):
-					(body as StaticBody3D).collision_layer = 2
-					(body as StaticBody3D).collision_mask = 0
 
 
 func grass_tuft_mesh() -> ArrayMesh:
@@ -294,7 +261,8 @@ func grass_tuft_mesh() -> ArrayMesh:
 
 
 func scatter_grass() -> void:
-	# Wait for the island collision to exist, then drop tufts onto it.
+	# Dry weeds: around the edge of the building lot, along the kerbs and out in
+	# the wasteland. Wait for the ground collision to exist first.
 	await get_tree().physics_frame
 	await get_tree().physics_frame
 	var space := get_world_3d().direct_space_state
@@ -302,22 +270,25 @@ func scatter_grass() -> void:
 	rng.seed = 42
 	var xforms: Array = []
 	var colors: Array = []
-	for i in 30000:
-		if xforms.size() >= 6000:
+	var edge: float = city.CITY_HALF
+	for i in 40000:
+		if xforms.size() >= 7000:
 			break
-		var a := rng.randf() * TAU
-		var r := sqrt(rng.randf()) * (BUILD_R + 2.3)
-		if r < BUILD_R - 0.9 and rng.randf() > 0.02:
-			continue  # keep the build area mostly clear
-		var p := Vector3(cos(a) * r, 2.0, sin(a) * r)
-		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p, p + Vector3.DOWN * 4.0, 2))
-		if hit.is_empty() or (hit.normal as Vector3).y < 0.6:
+		var p := Vector3(rng.randf_range(-edge - 30, edge + 30), 3.0, rng.randf_range(-edge - 30, edge + 30))
+		var lot: bool = maxf(absf(p.x), absf(p.z)) < city.LOT_HALF
+		if lot:
+			if Vector2(p.x, p.z).length() < BUILD_R + 0.3 and rng.randf() > 0.01:
+				continue  # keep the build area clear
+		elif maxf(absf(p.x), absf(p.z)) < edge and rng.randf() > 0.12:
+			continue  # only a few weeds poke through the city
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(p, p + Vector3.DOWN * 6.0, 2))
+		if hit.is_empty() or (hit.normal as Vector3).y < 0.8 or (hit.position as Vector3).y > 0.2:
 			continue
-		var s := rng.randf_range(0.7, 1.4)
-		var basis := Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.8, 1.3), s))
+		var s := rng.randf_range(0.7, 1.5)
+		var basis := Basis(Vector3.UP, rng.randf() * TAU).scaled(Vector3(s, s * rng.randf_range(0.8, 1.4), s))
 		xforms.append(Transform3D(basis, hit.position))
-		var g := rng.randf_range(0.85, 1.15)
-		colors.append(Color(g * rng.randf_range(0.9, 1.1), g, g * 0.9))
+		var g := rng.randf_range(0.8, 1.15)
+		colors.append(Color(g * rng.randf_range(0.95, 1.15), g, g * 0.85))
 	var mm := MultiMesh.new()
 	mm.transform_format = MultiMesh.TRANSFORM_3D
 	mm.use_colors = true
@@ -330,32 +301,12 @@ func scatter_grass() -> void:
 	mmi.multimesh = mm
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://shaders/grass.gdshader")
+	mat.set_shader_parameter("root_color", Color("4a4224"))
+	mat.set_shader_parameter("tip_color", Color("b8a35e"))
 	mmi.material_override = mat
 	mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(mmi)
 
-
-func setup_cloud_sea() -> void:
-	var noise := NoiseTexture2D.new()
-	noise.width = 512
-	noise.height = 512
-	noise.seamless = true
-	var fnl := FastNoiseLite.new()
-	fnl.frequency = 0.008
-	fnl.fractal_octaves = 5
-	noise.noise = fnl
-	var mat := ShaderMaterial.new()
-	mat.shader = load("res://shaders/cloud_sea.gdshader")
-	mat.set_shader_parameter("noise_tex", noise)
-	for layer in [[-16.0, 0.0], [-22.0, 0.37]]:
-		var mi := MeshInstance3D.new()
-		var plane := PlaneMesh.new()
-		plane.size = Vector2(600, 600)
-		mi.mesh = plane
-		mi.material_override = mat
-		mi.position = Vector3(layer[1] * 100.0, layer[0], 0)
-		mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
-		add_child(mi)
 
 func setup_ghost() -> void:
 	ghost_mat = StandardMaterial3D.new()
@@ -378,7 +329,7 @@ func setup_player() -> void:
 	player.set_script(preload("res://player.gd"))
 	player.main = self
 	player.collision_layer = 4
-	player.collision_mask = 1 | 2
+	player.collision_mask = 1 | 2 | 32 | 64  # tiles, ground, the buggy, loose junk
 	var cs := CollisionShape3D.new()
 	var cap := CapsuleShape3D.new()
 	cap.radius = 0.14
@@ -392,6 +343,44 @@ func setup_player() -> void:
 	add_child(player)
 	player.set_character(load_settings().get("character", "kid"))
 	set_player_active(false)
+
+func setup_buggy() -> void:
+	buggy = VehicleBody3D.new()
+	buggy.set_script(preload("res://vehicle.gd"))
+	buggy.main = self
+	add_child(buggy)
+	# Parked on the road just south of the lot, pointing east.
+	buggy.setup(Transform3D(Basis(Vector3.UP, PI / 2), Vector3(-5.0, 0.4, city.LOT_HALF + city.ROAD / 2)))
+
+
+func near_buggy() -> bool:
+	return play_mode and not driving and player.global_position.distance_to(buggy.global_position) < 1.8
+
+
+func enter_buggy() -> void:
+	driving = true
+	buggy.driving = true
+	buggy.set_driver(player.character)
+	set_player_active(false)
+	cam_dist = maxf(cam_dist, 5.5)
+	cam_pitch = 0.32
+	play_sfx(pop_snd)
+	refresh_ui()
+
+
+func exit_buggy() -> void:
+	driving = false
+	buggy.driving = false
+	buggy.set_driver("")
+	# Hop out on the driver's side.
+	var side: Vector3 = buggy.global_basis.x
+	player.global_position = buggy.global_position + side * 1.0 + Vector3(0, 0.6, 0)
+	player.velocity = Vector3.ZERO
+	set_player_active(true)
+	cam_dist = minf(cam_dist, 4.0)
+	play_sfx(pop_snd)
+	refresh_ui()
+
 
 func set_player_active(on: bool) -> void:
 	player.visible = on
@@ -1341,7 +1330,15 @@ func _unhandled_input(ev: InputEvent) -> void:
 				if not play_mode:
 					undo()
 			KEY_R:
-				flip()
+				if driving:
+					buggy.right_side_up()
+				else:
+					flip()
+			KEY_ENTER, KEY_KP_ENTER:
+				if driving:
+					exit_buggy()
+				elif near_buggy():
+					enter_buggy()
 			KEY_SPACE:
 				if not play_mode:
 					action()
@@ -1396,6 +1393,13 @@ func _process(delta: float) -> void:
 			var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
 			cam_target.x = flat.x
 			cam_target.z = flat.y
+	elif driving:
+		# Chase cam: swing round behind the buggy (arrows still nudge it).
+		var f: Vector3 = buggy.global_basis.z
+		var behind := atan2(-f.x, -f.z)
+		if Vector2(f.x, f.z).length() > 0.3 and not (Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_RIGHT)):
+			cam_yaw = lerp_angle(cam_yaw, behind, 1.0 - exp(-2.5 * delta))
+		cam_target = cam_target.lerp(buggy.global_position + Vector3(0, 0.6, 0), 1.0 - exp(-12.0 * delta))
 	elif play_mode:
 		cam_target = cam_target.lerp(player.global_position + Vector3(0, 0.35, 0), 1.0 - exp(-10.0 * delta))
 	if keys_live and not play_mode and place_item == "":
@@ -1420,7 +1424,7 @@ func _process(delta: float) -> void:
 		if Input.is_key_pressed(KEY_RIGHT):
 			cam_yaw -= 1.8 * delta
 		if Input.is_key_pressed(KEY_Q):
-			cam_dist = clampf(cam_dist * (1.0 + 1.2 * delta), 1.5, 40.0)
+			cam_dist = clampf(cam_dist * (1.0 + 1.2 * delta), 1.5, 60.0 if play_mode else 40.0)
 		if Input.is_key_pressed(KEY_E):
 			cam_dist = clampf(cam_dist * (1.0 - 1.2 * delta), 1.5, 40.0)
 
@@ -1438,6 +1442,12 @@ func _process(delta: float) -> void:
 	ghost_mat.albedo_color = c
 	if Time.get_ticks_msec() < flash_until:
 		status_label.text = flash_text
+	elif driving:
+		status_label.text = "W gas  -  S brake / back up  -  A D steer  -  Enter to hop out"
+	elif near_buggy():
+		status_label.text = "Press Enter to hop in the buggy!"
+	elif play_mode:
+		status_label.text = ""
 	elif place_item != "":
 		status_label.text = "Move to pick a spot  -  R to turn  -  Space to put it down  -  Esc to cancel"
 	elif ghost.visible and absf(tilt) > 0.01:
@@ -1460,6 +1470,7 @@ func _process(delta: float) -> void:
 	if shot_path != "":
 		frame_count += 1
 		if frame_count == shot_frame:
+			print("shot: buggy at %s, %d tiles, %d fps, %d draw calls" % [buggy.global_position, tiles.size(), Engine.get_frames_per_second(), RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)])
 			await RenderingServer.frame_post_draw
 			get_viewport().get_texture().get_image().save_png(shot_path)
 			get_tree().quit()
@@ -1486,6 +1497,8 @@ func set_erase(on: bool) -> void:
 
 
 func set_play(on: bool) -> void:
+	if driving and not on:
+		exit_buggy()
 	play_mode = on
 	if on:
 		erase_mode = false
@@ -1669,12 +1682,19 @@ func refresh_help() -> void:
 		help_grid.remove_child(c)
 		c.queue_free()
 	var rows: Array
-	if play_mode:
+	if driving:
+		rows = [
+			[["W"], "Gas"], [["S"], "Brake / back up"], [["A", "D"], "Steer"],
+			[["Space"], "Handbrake"], [["R"], "Flip back over"],
+			[["Left", "Right"], "Look around"], [["Q", "E"], "Zoom out / in"],
+			[["Enter"], "Hop out"], [["H"], "Hide this help"],
+		]
+	elif play_mode:
 		rows = [
 			[["W", "A", "S", "D"], "Walk"], [["Space"], "Jump"],
 			[["Left", "Right"], "Spin the camera"], [["Up", "Down"], "Look up / down"],
-			[["Q", "E"], "Zoom out / in"], [["Tab"], "Back to building"],
-			[["P"], "Pick your explorer"], [["H"], "Hide this help"],
+			[["Q", "E"], "Zoom out / in"], [["Enter"], "Drive the buggy (walk up to it)"],
+			[["Tab"], "Back to building"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
 		]
 	else:
 		rows = [
@@ -1826,6 +1846,8 @@ func picker_key(key: int) -> void:
 
 func pick_character(c: String) -> void:
 	player.set_character(c)
+	if driving:
+		buggy.set_driver(c)
 	save_settings({"character": c})
 	play_sfx(click_snd)
 	show_picker(false)
