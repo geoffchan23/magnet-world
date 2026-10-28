@@ -6,6 +6,7 @@ extends Control
 ##  - a thumb stick (bottom left) presses W A S D
 ##  - big buttons (bottom right) press Space, Shift, F, G, Enter...
 ##  - two fingers anywhere: drag to turn the camera, pinch to zoom
+##  - building: one finger drags the camera around the lot
 ## Taps on the world still place tiles (Godot turns a tap into a mouse click).
 
 var main: Node
@@ -81,7 +82,7 @@ func mode() -> String:
 
 func _process(_delta: float) -> void:
 	var m := mode()
-	stick_base.visible = m != "build"
+	stick_base.visible = true  # walks, drives, or slides the camera while building
 	var shown: Array = []
 	for b in buttons:
 		var on: bool = m in b.modes or (m == "walk" and "walk_near" in b.modes and main.near_buggy())
@@ -115,12 +116,15 @@ func _input(ev: InputEvent) -> void:
 			var r := Rect2(stick_base.global_position - Vector2(40, 40), stick_base.size + Vector2(80, 80))
 			if stick_base.visible and stick_finger == -1 and r.has_point(t.position):
 				stick_finger = t.index
+				main.tap_ok = false  # pushing the stick never places a tile
 				stick_centre = stick_base.global_position + stick_base.size / 2
 				move_stick(t.position)
 				get_viewport().set_input_as_handled()
 				return
 			fingers[t.index] = t.position
 			pinch_dist = 0.0
+			if fingers.size() > 1:
+				main.tap_ok = false  # a two-finger turn isn't a tap
 		else:
 			if t.index == stick_finger:
 				stick_finger = -1
@@ -144,6 +148,11 @@ func _input(ev: InputEvent) -> void:
 			main.cam_yaw -= d.relative.x * 0.004
 			main.cam_pitch = clampf(main.cam_pitch + d.relative.y * 0.003, 0.05, 1.45)
 			get_viewport().set_input_as_handled()
+		elif fingers.size() == 1 and not main.play_mode:
+			# One finger while building: drag the lot around (a tap still places).
+			main.pan_camera(d.relative)
+			if d.position.distance_to(main.tap_pos) > 14.0:
+				main.tap_ok = false
 		elif fingers.size() == 1 and main.play_mode:
 			# One finger on the world while exploring: look around.
 			main.cam_yaw -= d.relative.x * 0.006

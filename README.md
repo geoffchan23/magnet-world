@@ -12,25 +12,26 @@ Or open the folder in the Godot editor (Import → pick `project.godot`) and pre
 
 ## How it plays
 
-Everything works from the keyboard (an on-screen controls card shows the keys; H hides it):
+Mouse + keyboard on the Mac, touch on the iPad (an on-screen controls card shows the keys; H hides it):
 
 | Build mode | | Explore mode (Tab) | | Driving (Enter by the buggy) | |
 |---|---|---|---|---|---|
-| W A S D | move the crosshair (scrolls at the screen edge) | W A S D | walk | W / S | gas / brake + reverse |
-| Left / Right | spin camera | Space | jump | A / D | steer |
+| W A S D | move the camera around | W A S D | walk | W / S | gas / brake + reverse |
+| Q / E (or Left / Right) | spin camera | Space | jump | A / D | steer |
 | Up / Down | tilt camera | Up / Down | look up / down | Space | handbrake |
-| Q / E | zoom out / in | Q / E | zoom | R | flip back over |
-| Space | place tile | P | pick explorer | Left / Right | look around |
+| Mouse wheel (or - / =) | zoom | Q / E | spin camera | R | flip back over |
+| Click (or Space) | place tile at the mouse | P | pick explorer | Q / E | look around |
 | R | flip / turn the tile | Enter | hop in a vehicle | Enter | hop out |
 | F / G | tilt the tile to any angle (stand ground tiles up) | 1–8 | pick a weapon | F | special move |
-| Backspace | remove tile | F | fight! | G | honk |
+| Right-click (or Backspace) | remove tile | F | fight! | G | honk |
 | | | I | summon a vehicle | Flying: Space / Shift | up / down |
 | | | Tab | back to building | | |
 | 1–5, C, Z, X | shape, colour, undo, eraser | | |
 | I | Items menu (add our couch!) | | |
 | K | Smash! menu (Giant Levi or the wrecking ball) | | |
 
-The mouse still works too (click to place, right-click to remove, right-drag to spin, scroll to zoom).
+Mouse: click places at the pointer, right-click removes, right-drag orbits, middle-drag slides the camera, scroll zooms.
+iPad: tap places, one finger drags the lot around, two fingers turn the camera, pinch zooms; the thumb stick walks, drives or slides the camera.
 
 - Shapes: square, triangle, right triangle (half a square, Picasso Tiles style), tall triangle, big square.
 - Point at a tile edge and the new tile hinges off it like a magnet; if its corners would meet existing

@@ -82,6 +82,7 @@ var click_snd: AudioStreamWAV
 var pop_snd: AudioStreamWAV
 
 var orbiting := false
+var touch_ui := false  # the iPad's on-screen controls are showing
 var right_press_pos := Vector2.ZERO
 var right_moved := false
 
@@ -114,9 +115,9 @@ var shake := 0.0  # camera shake amount, decays by itself
 var crash_snd: AudioStreamWAV
 var thud_snd: AudioStreamWAV
 var items_button: Button
-var kb_aim := true  # aim with the keyboard crosshair instead of the mouse
-var aim_pos := Vector2(-1, -1)  # crosshair position on screen (WASD moves it)
-var crosshair: Control
+var panning := false  # middle mouse held: drag slides the camera
+var tap_pos := Vector2(-1, -1)  # touch: where a finger went down (a tap places on lift)
+var tap_ok := false  # still a tap? (cleared by dragging or a second finger)
 var help_panel: PanelContainer
 var help_grid: GridContainer
 var help_visible := true
@@ -966,9 +967,9 @@ func update_hover() -> void:
 	update_item_hover()
 	if play_mode or menu_open() or place_item != "":
 		return
-	if not kb_aim and get_viewport().gui_get_hovered_control() != null:
+	if get_viewport().gui_get_hovered_control() != null:
 		return
-	var mp := aim_pos if kb_aim else get_viewport().get_mouse_position()
+	var mp := get_viewport().get_mouse_position()
 	var from := cam.project_ray_origin(mp)
 	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 1 | 2)
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -1280,7 +1281,7 @@ func update_item_hover() -> void:
 	# Ghost of the item being placed follows the aim along the ground (snaps to half-tiles).
 	if place_item == "" or play_mode or menu_open() or item_ghost == null:
 		return
-	var mp := aim_pos if kb_aim else get_viewport().get_mouse_position()
+	var mp := get_viewport().get_mouse_position()
 	var from := cam.project_ray_origin(mp)
 	var q := PhysicsRayQueryParameters3D.create(from, from + cam.project_ray_normal(mp) * 300.0, 2)
 	var hit := get_world_3d().direct_space_state.intersect_ray(q)
@@ -1452,13 +1453,36 @@ func choose_item(item: String) -> void:
 
 # ---------------------------------------------------------------- input + camera
 
+func pan_camera(screen_delta: Vector2) -> void:
+	# Drag the ground along with the pointer (middle mouse, or one finger on the iPad).
+	var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
+	var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
+	var per_px := cam_dist * 0.0016
+	move_camera((-right * screen_delta.x + fwd * screen_delta.y) * per_px)
+
+
+func move_camera(by: Vector3) -> void:
+	cam_target += by
+	var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
+	cam_target.x = flat.x
+	cam_target.z = flat.y
+
+
 func _unhandled_input(ev: InputEvent) -> void:
 	if busy:
 		return
 	if ev is InputEventMouseButton:
 		var mb := ev as InputEventMouseButton
-		if mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not play_mode:
-			kb_aim = false
+		if mb.button_index == MOUSE_BUTTON_LEFT and not play_mode and touch_ui:
+			# On the iPad a tap places when the finger lifts, so a drag can move the camera.
+			if mb.pressed:
+				tap_pos = mb.position
+				tap_ok = true
+			elif tap_ok and mb.position.distance_to(tap_pos) < 14.0:
+				tap_ok = false
+				update_hover()
+				action()
+		elif mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and not play_mode:
 			update_hover()
 			action()
 		elif mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and on_foot():
@@ -1472,6 +1496,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 				orbiting = false
 				if not right_moved and not play_mode:
 					remove_hovered()
+		elif mb.button_index == MOUSE_BUTTON_MIDDLE:
+			panning = mb.pressed
 		elif mb.button_index in [MOUSE_BUTTON_WHEEL_UP, MOUSE_BUTTON_WHEEL_DOWN] and mb.pressed and mb.shift_pressed:
 			tilt += 5.0 if mb.button_index == MOUSE_BUTTON_WHEEL_UP else -5.0
 			tilt = clampf(tilt, 0.0, 180.0) if hover_ground else wrapf(tilt, -180.0, 180.0)
@@ -1481,8 +1507,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 			cam_dist = clampf(cam_dist * 1.1, 1.5, 40.0)
 	elif ev is InputEventMouseMotion:
 		var mm := ev as InputEventMouseMotion
-		if not orbiting and mm.relative.length() > 2.0 and key_script.is_empty():
-			kb_aim = false
+		if panning:
+			pan_camera(mm.relative)
 		if orbiting:
 			cam_yaw -= mm.relative.x * 0.008
 			cam_pitch = clampf(cam_pitch + mm.relative.y * 0.006, 0.05, 1.45)
@@ -1503,10 +1529,6 @@ func _unhandled_input(ev: InputEvent) -> void:
 			if menu.visible:
 				menu_key(menu, key)
 				return
-		if key in [KEY_W, KEY_A, KEY_S, KEY_D, KEY_UP, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_Q, KEY_E, KEY_SPACE, KEY_F, KEY_G]:
-			if not kb_aim:
-				aim_pos = get_viewport().get_mouse_position()  # pick up where the mouse was
-			kb_aim = true
 		match key:
 			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8:
 				if not play_mode and key - KEY_1 < SHAPES.size():
@@ -1562,33 +1584,20 @@ func _unhandled_input(ev: InputEvent) -> void:
 func _process(delta: float) -> void:
 	var keys_live := not menu_open() and not busy
 	if not play_mode and keys_live:
-		# WASD moves the crosshair around the screen like a mouse pointer; pushing it
-		# against the edge of the screen scrolls the view that way.
-		var vs := get_viewport().get_visible_rect().size
-		if aim_pos.x < 0.0:
-			aim_pos = vs / 2.0
+		# WASD slides the camera across the lot, the way it's facing.
 		var dir := Vector2.ZERO
 		if Input.is_key_pressed(KEY_W):
-			dir.y -= 1.0
-		if Input.is_key_pressed(KEY_S):
 			dir.y += 1.0
+		if Input.is_key_pressed(KEY_S):
+			dir.y -= 1.0
 		if Input.is_key_pressed(KEY_A):
 			dir.x -= 1.0
 		if Input.is_key_pressed(KEY_D):
 			dir.x += 1.0
-		var lo := Vector2(vs.x * 0.06, vs.y * 0.08)
-		var hi := Vector2(vs.x * 0.94, vs.y - 160.0)  # stay above the toolbar
-		var want := aim_pos + dir * vs.y * 0.55 * delta
-		aim_pos = want.clamp(lo, hi)
-		var push := want - aim_pos  # how far past the edge we tried to go
-		if kb_aim and push.length() > 0.0:
+		if dir != Vector2.ZERO:
 			var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
 			var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
-			var move := right * signf(push.x) + fwd * -signf(push.y)
-			cam_target += move.normalized() * clampf(cam_dist * 0.45, 1.5, 6.0) * delta
-			var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
-			cam_target.x = flat.x
-			cam_target.z = flat.y
+			move_camera((right * dir.x + fwd * dir.y).normalized() * clampf(cam_dist * 0.8, 3.0, 14.0) * delta)
 	if play_mode and hearts < MAX_HEARTS:
 		heal_t += delta
 		if heal_t > 6.0:
@@ -1599,7 +1608,7 @@ func _process(delta: float) -> void:
 		# Chase cam: swing round behind the buggy (arrows still nudge it).
 		var f: Vector3 = ride.global_basis.z
 		var behind := atan2(-f.x, -f.z)
-		if Vector2(f.x, f.z).length() > 0.3 and not (Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_RIGHT)):
+		if Vector2(f.x, f.z).length() > 0.3 and not (Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_RIGHT) or Input.is_key_pressed(KEY_Q) or Input.is_key_pressed(KEY_E)):
 			cam_yaw = lerp_angle(cam_yaw, behind, 1.0 - exp(-2.5 * delta))
 		cam_target = cam_target.lerp(ride.global_position + Vector3(0, 0.6, 0), 1.0 - exp(-12.0 * delta))
 	elif play_mode:
@@ -1621,13 +1630,13 @@ func _process(delta: float) -> void:
 			cam_pitch = clampf(cam_pitch + 1.2 * delta, 0.05, 1.45)
 		if Input.is_key_pressed(KEY_DOWN):
 			cam_pitch = clampf(cam_pitch - 1.2 * delta, 0.05, 1.45)
-		if Input.is_key_pressed(KEY_LEFT):
+		if Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_Q):
 			cam_yaw += 1.8 * delta
-		if Input.is_key_pressed(KEY_RIGHT):
+		if Input.is_key_pressed(KEY_RIGHT) or Input.is_key_pressed(KEY_E):
 			cam_yaw -= 1.8 * delta
-		if Input.is_key_pressed(KEY_Q):
+		if Input.is_key_pressed(KEY_MINUS):
 			cam_dist = clampf(cam_dist * (1.0 + 1.2 * delta), 1.5, 60.0 if play_mode else 40.0)
-		if Input.is_key_pressed(KEY_E):
+		if Input.is_key_pressed(KEY_EQUAL) or Input.is_key_pressed(KEY_PLUS):
 			cam_dist = clampf(cam_dist * (1.0 - 1.2 * delta), 1.5, 40.0)
 
 	var off := Vector3(cos(cam_pitch) * sin(cam_yaw), sin(cam_pitch), cos(cam_pitch) * cos(cam_yaw)) * cam_dist
@@ -1670,12 +1679,9 @@ func _process(delta: float) -> void:
 		status_label.text = "F / G to tilt any angle"
 	else:
 		status_label.text = ""
-	crosshair.visible = kb_aim and not play_mode and not menu_open() and not busy
 	# Clear the screen for the Smash! show.
 	(play_button.get_parent().get_parent() as Control).visible = not busy
 	help_panel.visible = help_visible and not busy and not menu_open()
-	crosshair.position = aim_pos
-	crosshair.move_to_front()  # never hidden behind the controls card
 
 	if shot_path != "":
 		frame_count += 1
@@ -1804,6 +1810,7 @@ func setup_ui() -> void:
 	], func(kind): destroyer.start(kind))
 	setup_help(layer)
 	if DisplayServer.is_touchscreen_available() or "--touch" in OS.get_cmdline_user_args():
+		touch_ui = true
 		var touch := Control.new()
 		touch.set_script(preload("res://touch.gd"))
 		touch.main = self
@@ -1858,22 +1865,6 @@ func setup_ui() -> void:
 		weapon_buttons[w] = b
 	var fight := add_button(weapon_bar, "F\nFight!", Vector2(84, 70), func(): combat.attack())
 	style_button(fight, Color("c0392b"), false)
-
-	# Aiming crosshair for keyboard building.
-	crosshair = Control.new()
-	crosshair.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(crosshair)
-	for r in [[30, 4, Color(1, 1, 1, 0.9)], [8, 0, Color(1, 1, 1, 0.9)]]:
-		var ring := Panel.new()
-		var sb := make_style(Color(0, 0, 0, 0) if r[1] > 0 else r[2], r[2], r[1])
-		sb.set_corner_radius_all(r[0])
-		sb.shadow_color = Color(0, 0, 0, 0.35)
-		sb.shadow_size = 3
-		ring.add_theme_stylebox_override("panel", sb)
-		ring.size = Vector2(r[0], r[0])
-		ring.position = -ring.size / 2
-		ring.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		crosshair.add_child(ring)
 
 	hint_label = Label.new()
 	hint_label.position = Vector2(18, 14)
@@ -1958,30 +1949,30 @@ func refresh_help() -> void:
 		rows = [
 			[["W", "S"], "Forward / back (plane: faster / slower)"], [["A", "D"], "Turn"],
 			[["Space"], "Up!"], [["Shift"], "Down"], [["F"], "Special move"], [["G"], "Honk"],
-			[["Left", "Right"], "Look around"], [["Q", "E"], "Zoom out / in"],
+			[["Q", "E"], "Look around"], [["Scroll"], "Zoom"],
 			[["Enter"], "Hop out"], [["I"], "Get a different vehicle"], [["H"], "Hide this help"],
 		]
 	elif driving:
 		rows = [
 			[["W"], "Gas"], [["S"], "Brake / back up"], [["A", "D"], "Steer"],
 			[["Space"], "Handbrake"], [["F"], "Special move"], [["G"], "Honk"], [["R"], "Flip back over"],
-			[["Left", "Right"], "Look around"], [["Q", "E"], "Zoom out / in"],
+			[["Q", "E"], "Look around"], [["Scroll"], "Zoom"],
 			[["Enter"], "Hop out"], [["H"], "Hide this help"],
 		]
 	elif play_mode:
 		rows = [
 			[["W", "A", "S", "D"], "Walk"], [["Space"], "Jump"],
-			[["Left", "Right"], "Spin the camera"], [["Up", "Down"], "Look up / down"],
-			[["Q", "E"], "Zoom out / in"], [["Enter"], "Drive the buggy (walk up to it)"],
+			[["Mouse"], "Right-drag to look around"], [["Q", "E"], "Spin the camera"],
+			[["Scroll"], "Zoom"], [["Enter"], "Drive the buggy (walk up to it)"],
 			[["1", "-", "8"], "Pick a weapon"], [["F"], "Fight!"], [["I"], "Get a vehicle"],
 			[["Tab"], "Back to building"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
 		]
 	else:
 		rows = [
-			[["W", "A", "S", "D"], "Move the aim"], [["Left", "Right"], "Spin the camera"],
-			[["Up", "Down"], "Tilt the camera"], [["Q", "E"], "Zoom out / in"],
-			[["Space"], "Place a tile"], [["R"], "Flip / turn the tile"], [["F", "G"], "Tilt the tile any angle"],
-			[["Backspace"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
+			[["W", "A", "S", "D"], "Move around"], [["Q", "E"], "Spin the camera"],
+			[["Right-drag"], "Look around"], [["Scroll"], "Zoom"],
+			[["Click"], "Place a tile"], [["R"], "Flip / turn the tile"], [["F", "G"], "Tilt the tile any angle"],
+			[["Right-click"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],
 			[["I"], "Add things (like our couch!)"], [["K"], "SMASH it!"],
 			[["Tab"], "Go exploring!"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
