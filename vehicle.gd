@@ -1,22 +1,27 @@
 extends VehicleBody3D
-## The scavenger buggy. Walk up to it in Explore mode and press Enter to hop in.
+## A ground vehicle: the buggy, fire truck, police car, garbage truck, race car,
+## monster truck or ice cream truck (see rides.gd). Walk up to one in Explore
+## mode and press Enter to hop in.
 ##
 ## W / S  gas and brake (hold S to reverse), A / D steer, Space handbrake,
-## R flips it back onto its wheels, Enter hops out. Crash into your build fast
-## enough and it smashes to pieces (Z puts it back, like after a Smash!).
+## F special move, G horn, R flips it back onto its wheels, Enter hops out.
+## Crash into your build fast enough and it smashes to pieces (Z puts it back).
 ##
-## The model (assets/vehicles/buggy.glb) has a Body, four wheels with their
-## origins at the hubs, and a Seat empty where the driver sits; the driver is a
-## copy of your explorer, posed sitting down.
+## Models (assets/vehicles/<kind>.glb) have a Body, wheels with their origins at
+## the hubs (WheelFL/FR/RL/RR, maybe WheelML/MR), and a Seat empty where the
+## driver sits; the driver is a copy of your explorer, posed sitting down.
 
-const ENGINE := 210.0  # per wheel (all four drive)
-const REVERSE := 120.0
+const Rides := preload("res://rides.gd")
 const BRAKE := 6.0
-const MAX_SPEED := 13.0
 const MAX_STEER := 0.55
 const LAYER := 32
 
+var ENGINE := 210.0  # per wheel (all of them drive)
+var REVERSE := 120.0
+var MAX_SPEED := 13.0
 var main: Node3D
+var kind := "buggy"
+var fx: Node3D  # ride_fx.gd: special move + horn
 var driving := false
 var steer_now := 0.0
 var upside_down_for := 0.0
@@ -29,35 +34,40 @@ var engine_snd: AudioStreamPlayer3D
 var spawn_xf := Transform3D()
 
 
-func setup(at: Transform3D) -> void:
+func setup(at: Transform3D, k := "buggy") -> void:
+	kind = k
+	var spec: Dictionary = Rides.RIDES[k]
+	ENGINE = spec.engine
+	REVERSE = ENGINE * 0.55
+	MAX_SPEED = spec.top
 	spawn_xf = at
 	collision_layer = LAYER
 	collision_mask = 1 | 2 | 8 | LAYER | 64
-	mass = 120.0
+	mass = spec.mass
 	center_of_mass_mode = RigidBody3D.CENTER_OF_MASS_MODE_CUSTOM
 	center_of_mass = Vector3(0, 0.22, 0)
 	can_sleep = false
 	contact_monitor = true
 	max_contacts_reported = 4
 	body_entered.connect(_on_hit)
-	var path := "res://assets/vehicles/buggy.glb"
+	var path := Rides.model_path(k)
 	var model: Node3D = (load(path) as PackedScene).instantiate() if ResourceLoader.exists(path) else stand_in()
 	var hubs := {}
-	for n in ["WheelFL", "WheelFR", "WheelRL", "WheelRR"]:
+	for n in ["WheelFL", "WheelFR", "WheelML", "WheelMR", "WheelRL", "WheelRR"]:
 		var w := model.find_child(n, true, false) as Node3D
-		hubs[n] = w
-	var body_mesh := model.find_child("Body", true, false) as Node3D
+		if w:
+			hubs[n] = w
 	var seat_node := model.find_child("Seat", true, false) as Node3D
 	if seat_node:
 		seat = Transform3D(Basis(), seat_node.position + Vector3(0, -0.094, 0))  # Seat is the cushion top; figures stand on their origin
 	steering_wheel = model.find_child("Steering", true, false) as Node3D
-	# Re-home everything under the vehicle body.
-	for n in [body_mesh, steering_wheel]:
-		if n:
-			var xf: Transform3D = n.transform
-			n.get_parent().remove_child(n)
+	# Re-home everything except the wheels under the vehicle body.
+	for n in model.get_children():
+		if not hubs.has((n as Node).name) and n is Node3D:
+			var xf: Transform3D = (n as Node3D).transform
+			model.remove_child(n)
 			add_child(n)
-			n.transform = xf
+			(n as Node3D).transform = xf
 	if steering_wheel:
 		steering_rest = steering_wheel.transform
 	var lo := Vector3(INF, INF, INF)
@@ -67,17 +77,22 @@ func setup(at: Transform3D) -> void:
 		var vw := VehicleWheel3D.new()
 		vw.name = n
 		var front: bool = n.begins_with("WheelF")
-		vw.position = w.position + Vector3(0, 0.08, 0)  # the springs settle a little under load
+		# Wheel size comes from the tyre mesh itself.
+		var radius := 0.3
+		if w is MeshInstance3D:
+			radius = (w as MeshInstance3D).get_aabb().size.y / 2.0
+		var travel: float = spec.get("travel", 0.14)
+		vw.position = w.position + Vector3(0, travel * 0.55, 0)  # the springs settle a little under load
 		vw.use_as_steering = front
 		vw.use_as_traction = true
-		vw.wheel_radius = 0.3
-		vw.wheel_rest_length = 0.12
-		vw.suspension_travel = 0.14
-		vw.suspension_stiffness = 45.0
+		vw.wheel_radius = radius
+		vw.wheel_rest_length = travel * 0.85
+		vw.suspension_travel = travel
+		vw.suspension_stiffness = 45.0 if travel < 0.2 else 28.0
 		vw.suspension_max_force = 6000.0
 		vw.damping_compression = 1.6
 		vw.damping_relaxation = 2.2
-		vw.wheel_friction_slip = 3.2
+		vw.wheel_friction_slip = spec.get("grip", 3.2)
 		vw.wheel_roll_influence = 0.15
 		add_child(vw)
 		# The tyre mesh spins and steers with the wheel.
@@ -88,20 +103,34 @@ func setup(at: Transform3D) -> void:
 		lo = lo.min(w.position + vw.position)
 		hi = hi.max(vw.position)
 	model.queue_free()
-	# The chassis box sits above the wheels so the suspension does the work.
+	# The chassis box: the body's footprint, sitting above the wheels so the
+	# suspension does the work.
+	var body_box := AABB()
+	var body_mesh := get_node_or_null("Body") as MeshInstance3D
+	if body_mesh:
+		body_box = body_mesh.transform * body_mesh.get_aabb()
+	else:
+		body_box = AABB(Vector3(-0.5, 0.3, -1.0), Vector3(1.0, 0.6, 2.0))
+	var floor_y: float = hi.y + 0.05
 	var cs := CollisionShape3D.new()
 	var box := BoxShape3D.new()
-	var span := hi - lo
-	box.size = Vector3(maxf(span.x, 0.8), 0.42, maxf(span.z + 0.5, 1.6))
+	box.size = Vector3(body_box.size.x * 0.92, maxf(body_box.end.y - floor_y, 0.3), body_box.size.z * 0.95)
 	cs.shape = box
-	cs.position = Vector3(0, 0.55, 0)
+	cs.position = Vector3(body_box.get_center().x, floor_y + box.size.y / 2, body_box.get_center().z)
 	add_child(cs)
+	set_meta("half_size", Vector3(box.size.x / 2, (floor_y + box.size.y) / 2, box.size.z / 2))
+	center_of_mass = Vector3(0, hi.y * 0.8, 0)
 	var phys := PhysicsMaterial.new()
 	phys.friction = 0.6
 	phys.bounce = 0.1
 	physics_material_override = phys
+	fx = Node3D.new()
+	fx.set_script(preload("res://ride_fx.gd"))
+	fx.main = main
+	add_child(fx)
+	fx.setup(self, k)
 	engine_snd = AudioStreamPlayer3D.new()
-	engine_snd.stream = engine_loop()
+	engine_snd.stream = Rides.synth("engine")
 	engine_snd.volume_db = -14.0
 	engine_snd.unit_size = 6.0
 	add_child(engine_snd)
@@ -144,21 +173,25 @@ func set_driver(character: String) -> void:
 	if driver:
 		driver.queue_free()
 		driver = null
-	if character == "":
-		return
-	driver = (load("res://assets/characters/%s.glb" % character) as PackedScene).instantiate()
-	driver.scale = Vector3.ONE * 0.55
-	add_child(driver)
-	driver.transform = seat * Transform3D(Basis().scaled(Vector3.ONE * 0.55), Vector3.ZERO)
-	# Sit down: legs straight out in front, hands on the wheel.
-	for part in ["LegL", "LegR"]:
-		var n := driver.find_child(part, true, false) as Node3D
-		if n:
-			n.rotate_object_local(Vector3.RIGHT, -1.45)
-	for part in ["ArmL", "ArmR"]:
-		var n := driver.find_child(part, true, false) as Node3D
-		if n:
-			n.rotate_object_local(Vector3.RIGHT, -1.2)
+	if character != "":
+		driver = Rides.seat_driver(self, seat, character)
+
+
+func velocity_now() -> Vector3:
+	return linear_velocity
+
+
+func boost() -> void:
+	apply_central_impulse(global_basis.z * mass * 6.0)
+
+
+func hop() -> void:
+	apply_central_impulse(Vector3.UP * mass * 6.5)
+	main.shake = 0.3
+
+
+func stunt() -> void:
+	pass
 
 
 func _physics_process(delta: float) -> void:
@@ -235,23 +268,3 @@ func right_side_up() -> void:
 		global_transform = Transform3D(Basis(Vector3.UP, yaw), Vector3(p.x, maxf(p.y, 0.0) + 0.8, p.z))
 	linear_velocity = Vector3.ZERO
 	angular_velocity = Vector3.ZERO
-
-
-func engine_loop() -> AudioStreamWAV:
-	# A chuggy little engine: a low buzz with a lumpy beat, looped.
-	var rate := 22050
-	var n := rate / 4
-	var data := PackedByteArray()
-	data.resize(n * 2)
-	for i in n:
-		var t := float(i) / rate
-		var beat := 0.6 + 0.4 * sin(TAU * 24.0 * t)
-		var s := (sin(TAU * 64.0 * t) * 0.6 + sin(TAU * 128.0 * t) * 0.25 + (randf() - 0.5) * 0.15) * beat
-		data.encode_s16(i * 2, int(clampf(s * 0.5, -1.0, 1.0) * 32767))
-	var w := AudioStreamWAV.new()
-	w.format = AudioStreamWAV.FORMAT_16_BITS
-	w.mix_rate = rate
-	w.data = data
-	w.loop_mode = AudioStreamWAV.LOOP_FORWARD
-	w.loop_end = n
-	return w

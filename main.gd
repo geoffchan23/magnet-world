@@ -61,8 +61,22 @@ var bad_mat: StandardMaterial3D
 
 var player: CharacterBody3D
 var city: Node3D  # city.gd
-var buggy: VehicleBody3D  # vehicle.gd
+var buggy: Node3D  # vehicle.gd: the one parked by the lot at the start
+var rides: Array = []  # every vehicle out in the world
+var ride: Node3D  # the one you're driving (vehicle.gd or flyer.gd)
+const Rides := preload("res://rides.gd")
+const MAX_RIDES := 6
 var driving := false
+var combat: Node3D  # combat.gd: weapons, shots, explosions
+var encounters: Node3D  # encounters.gd: people, creatures and scenarios
+const MAX_HEARTS := 6
+var hearts := MAX_HEARTS
+var stars := 0
+var heal_t := 0.0  # hearts come back one at a time when nothing has hit you for a while
+var hearts_label: Label
+var banner_label: Label
+var weapon_bar: HBoxContainer
+var weapon_buttons := {}
 var sfx: AudioStreamPlayer
 var click_snd: AudioStreamWAV
 var pop_snd: AudioStreamWAV
@@ -112,6 +126,7 @@ var flash_text := ""
 var flash_until := 0
 
 var demo := false
+var city_seed := 0  # every world gets its own random city; it's kept in the save
 var no_save := false
 var key_script: Array = []
 var shot_frame := 40
@@ -136,11 +151,23 @@ func _ready() -> void:
 			shot_frame = int(a.substr(12))
 		elif a.begins_with("--cam="):
 			cam_override = a.substr(6).split_floats(",")
+		elif a.begins_with("--seed="):
+			city_seed = int(a.substr(7))
+	if city_seed == 0:
+		city_seed = 2026 if demo else saved_seed()
 	setup_world()
 	setup_ghost()
 	setup_audio()
 	setup_player()
 	setup_buggy()
+	combat = Node3D.new()
+	combat.set_script(preload("res://combat.gd"))
+	combat.main = self
+	add_child(combat)
+	encounters = Node3D.new()
+	encounters.set_script(preload("res://encounters.gd"))
+	encounters.main = self
+	add_child(encounters)
 	destroyer = Node3D.new()
 	destroyer.set_script(preload("res://destroy.gd"))
 	destroyer.main = self
@@ -167,9 +194,14 @@ func _ready() -> void:
 		elif a.begins_with("--buggy="):
 			var v := a.substr(8).split_floats(",")  # x,z,heading in degrees
 			buggy.global_transform = Transform3D(Basis(Vector3.UP, deg_to_rad(v[2])), Vector3(v[0], 0.4, v[1]))
+		elif a.begins_with("--ride="):
+			set_play(true)
+			summon_ride(a.substr(7))
+		elif a.begins_with("--scenario="):
+			encounters.force_next = a.substr(11)
 		elif a == "--drive":
 			set_play(true)
-			enter_buggy()
+			enter_buggy(buggy)
 	if "--play" in OS.get_cmdline_user_args():
 		set_play(true)
 	refresh_ui()
@@ -224,7 +256,7 @@ func setup_world() -> void:
 	city = Node3D.new()
 	city.set_script(preload("res://city.gd"))
 	add_child(city)
-	city.build()
+	city.build(city_seed)
 	scatter_grass.call_deferred()
 
 	cam = Camera3D.new()
@@ -345,22 +377,149 @@ func setup_player() -> void:
 	set_player_active(false)
 
 func setup_buggy() -> void:
-	buggy = VehicleBody3D.new()
-	buggy.set_script(preload("res://vehicle.gd"))
-	buggy.main = self
-	add_child(buggy)
 	# Parked on the road just south of the lot, pointing east.
-	buggy.setup(Transform3D(Basis(Vector3.UP, PI / 2), Vector3(-5.0, 0.4, city.LOT_HALF + city.ROAD / 2)))
+	buggy = make_ride("buggy", Transform3D(Basis(Vector3.UP, PI / 2), Vector3(-5.0, 0.4, city.LOT_HALF + city.ROAD / 2)))
+
+
+func make_ride(kind: String, at: Transform3D) -> Node3D:
+	var r: Node3D
+	if Rides.RIDES[kind].type == "car":
+		r = VehicleBody3D.new()
+		r.set_script(preload("res://vehicle.gd"))
+	else:
+		r = CharacterBody3D.new()
+		r.set_script(preload("res://flyer.gd"))
+	r.main = self
+	add_child(r)
+	r.setup(at, kind)
+	rides.append(r)
+	return r
+
+
+func summon_ride(kind: String) -> void:
+	# From the Items menu: it appears next to you and in you hop.
+	if driving:
+		exit_buggy()
+	if not play_mode:
+		set_play(true)
+	var here := player.global_position
+	var fwd: Vector3 = player.facing()
+	var spot := here + fwd * 2.2
+	var space := get_world_3d().direct_space_state
+	for i in 8:
+		var a := atan2(fwd.x, fwd.z) + i * PI / 4
+		var p := here + Vector3(sin(a), 0, cos(a)) * 2.4
+		var hit := space.intersect_ray(PhysicsRayQueryParameters3D.create(Vector3(p.x, 30, p.z), Vector3(p.x, -2, p.z), 1 | 2))
+		if not hit.is_empty() and (hit.position as Vector3).y < 0.3:
+			spot = hit.position
+			break
+	var r := make_ride(kind, Transform3D(Basis(Vector3.UP, atan2(fwd.x, fwd.z)), spot + Vector3(0, 0.4, 0)))
+	combat.sparkles(spot + Vector3(0, 0.6, 0), Color("ffffff"), 40)
+	# Too many about? The oldest one you're not using drives off into the haze.
+	while rides.size() > MAX_RIDES:
+		var old: Node3D = rides.pop_front()
+		if old == r:
+			rides.append(old)
+			break
+		old.queue_free()
+	enter_buggy(r)
+	flash("%s!  %s  -  G to honk" % [Rides.RIDES[kind].name, Rides.SPECIAL_TEXT[Rides.RIDES[kind].special]])
+
+
+func player_body() -> Node3D:
+	# Where "you" are: your explorer, or the vehicle you're driving.
+	return ride if driving else player
+
+
+func on_foot() -> bool:
+	return play_mode and not driving and not busy
+
+
+func driven_vehicle() -> Node3D:
+	return ride if driving else null
+
+
+func hurt_player(damage: int, from: Vector3) -> void:
+	if player.hurt_t > 0.0:
+		return  # just got hit: a moment to get away
+	hearts -= damage
+	var away := player.global_position - from
+	away.y = 0
+	player.velocity = away.normalized() * 4.0 + Vector3(0, 3.0, 0)
+	player.hurt_t = 1.0
+	heal_t = 0.0
+	shake = 0.35
+	play_sfx(thud_snd)
+	combat.sparkles(player.global_position + Vector3(0, 0.3, 0), Color("ff6060"), 10, 0.5)
+	if hearts <= 0:
+		# Out of hearts: back to the building lot, all better.
+		banner("Ouch! Back to base to heal up.")
+		hearts = MAX_HEARTS
+		player.global_position = Vector3(0, 1.0, 0)
+		player.velocity = Vector3.ZERO
+		for n in get_tree().get_nodes_in_group("npc"):
+			if not n.friendly and (n as Node3D).global_position.length() < 25.0:
+				n.queue_free()
+	refresh_hud()
+
+
+func sparkle_burst(at: Vector3, col: Color) -> void:
+	combat.sparkles(at, col, 30)
+
+
+func add_stars(n: int, at: Vector3) -> void:
+	stars += n
+	combat.sparkles(at + Vector3(0, 0.5, 0), Color("ffd84a"), 12 * n)
+	play_sfx(click_snd)
+	refresh_hud()
+
+
+func banner(text: String) -> void:
+	banner_label.text = text
+	banner_label.modulate.a = 1.0
+	banner_label.scale = Vector2(0.6, 0.6)
+	var tw := create_tween()
+	tw.tween_property(banner_label, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(3.0)
+	tw.tween_property(banner_label, "modulate:a", 0.0, 0.6)
+
+
+func refresh_hud() -> void:
+	if hearts_label == null:
+		return
+	hearts_label.text = "♥".repeat(maxi(hearts, 0)) + "♡".repeat(MAX_HEARTS - maxi(hearts, 0)) + "    ★ %d" % stars
+	hearts_label.visible = play_mode
+	weapon_bar.get_parent().visible = play_mode and not driving
+	for w in weapon_buttons:
+		style_button(weapon_buttons[w], Color("3a4a63"), w == combat.current)
 
 
 func near_buggy() -> bool:
-	return play_mode and not driving and player.global_position.distance_to(buggy.global_position) < 1.8
+	return nearest_ride() != null
 
 
-func enter_buggy() -> void:
+func nearest_ride() -> Node3D:
+	if not play_mode or driving:
+		return null
+	var best: Node3D = null
+	var best_d := 2.2
+	for r in rides:
+		var d := player.global_position.distance_to((r as Node3D).global_position)
+		if d < best_d:
+			best = r
+			best_d = d
+	return best
+
+
+func enter_buggy(r: Node3D = null) -> void:
+	if r == null:
+		r = nearest_ride()
+	if r == null:
+		return
+	ride = r
 	driving = true
-	buggy.driving = true
-	buggy.set_driver(player.character)
+	ride.driving = true
+	ride.set_driver(player.character)
 	set_player_active(false)
 	cam_dist = maxf(cam_dist, 5.5)
 	cam_pitch = 0.32
@@ -370,11 +529,12 @@ func enter_buggy() -> void:
 
 func exit_buggy() -> void:
 	driving = false
-	buggy.driving = false
-	buggy.set_driver("")
-	# Hop out on the driver's side.
-	var side: Vector3 = buggy.global_basis.x
-	player.global_position = buggy.global_position + side * 1.0 + Vector3(0, 0.6, 0)
+	ride.driving = false
+	ride.set_driver("")
+	# Hop out on the driver's side (straight down if you're flying: it lands itself).
+	var side: Vector3 = ride.global_basis.x
+	var out: Vector3 = ride.global_position + side * 1.0 + Vector3(0, 0.6, 0)
+	player.global_position = out
 	player.velocity = Vector3.ZERO
 	set_player_active(true)
 	cam_dist = minf(cam_dist, 4.0)
@@ -1183,22 +1343,29 @@ func build_card_menu(layer: CanvasLayer, title_text: String, entries: Array, pic
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
 	title.add_theme_constant_override("outline_size", 10)
 	col.add_child(title)
-	var row := HBoxContainer.new()
-	row.alignment = BoxContainer.ALIGNMENT_CENTER
-	row.add_theme_constant_override("separation", 22)
-	col.add_child(row)
+	# A row of big cards, or a grid of smaller ones when there are lots.
+	var many := entries.size() > 4
+	var row := GridContainer.new()
+	row.columns = mini(entries.size(), 7) if many else entries.size()
+	row.add_theme_constant_override("h_separation", 14 if many else 22)
+	row.add_theme_constant_override("v_separation", 14)
+	var row_wrap := CenterContainer.new()
+	row_wrap.add_child(row)
+	col.add_child(row_wrap)
+	menu.set_meta("columns", row.columns)
 	for i in entries.size():
 		var e: Dictionary = entries[i]
 		var b := Button.new()
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(340, 360)
+		b.custom_minimum_size = Vector2(180, 200) if many else Vector2(340, 360)
 		if ResourceLoader.exists(e.icon):
 			b.icon = load(e.icon)
 		b.expand_icon = true
 		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
-		b.text = "%d  %s" % [i + 1, e.name]
-		b.add_theme_font_size_override("font_size", 24)
+		b.text = ("%d  %s" % [i + 1, e.name]) if i < 9 else e.name
+		b.add_theme_font_size_override("font_size", 17 if many else 24)
+		b.clip_text = true
 		b.add_theme_color_override("font_color", Color("1d2a40"))
 		b.add_theme_color_override("font_hover_color", Color("1d2a40"))
 		b.set_meta("index", i)
@@ -1206,6 +1373,8 @@ func build_card_menu(layer: CanvasLayer, title_text: String, entries: Array, pic
 		row.add_child(b)
 	var how := Label.new()
 	how.text = "Press the number  -  or use the arrow keys and Enter"
+	if entries.size() > 9:
+		how.text = "Use the arrow keys and Enter (or press 1 - 9)"
 	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	how.add_theme_font_size_override("font_size", 22)
 	how.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
@@ -1240,6 +1409,12 @@ func menu_key(menu: Control, key: int) -> void:
 		KEY_RIGHT, KEY_D:
 			menu.set_meta("sel", (int(menu.get_meta("sel")) + 1) % n)
 			show_menu(menu, true)
+		KEY_UP, KEY_W:
+			menu.set_meta("sel", (int(menu.get_meta("sel")) - int(menu.get_meta("columns", n)) + n * 4) % n)
+			show_menu(menu, true)
+		KEY_DOWN, KEY_S:
+			menu.set_meta("sel", (int(menu.get_meta("sel")) + int(menu.get_meta("columns", n))) % n)
+			show_menu(menu, true)
 		KEY_ENTER, KEY_KP_ENTER, KEY_SPACE:
 			pick_from_menu(menu, int(menu.get_meta("sel")))
 		KEY_ESCAPE, KEY_I, KEY_K:
@@ -1257,8 +1432,13 @@ func show_items(on: bool) -> void:
 
 
 func choose_item(item: String) -> void:
-	set_place_item(item)
 	play_sfx(click_snd)
+	if Rides.RIDES.has(item):
+		summon_ride(item)
+		return
+	if play_mode:
+		set_play(false)  # things like the couch go in the building lot
+	set_place_item(item)
 
 
 # ---------------------------------------------------------------- input + camera
@@ -1272,6 +1452,8 @@ func _unhandled_input(ev: InputEvent) -> void:
 			kb_aim = false
 			update_hover()
 			action()
+		elif mb.button_index == MOUSE_BUTTON_LEFT and mb.pressed and on_foot():
+			combat.attack()
 		elif mb.button_index == MOUSE_BUTTON_RIGHT:
 			if mb.pressed:
 				orbiting = true
@@ -1317,9 +1499,15 @@ func _unhandled_input(ev: InputEvent) -> void:
 				aim_pos = get_viewport().get_mouse_position()  # pick up where the mouse was
 			kb_aim = true
 		match key:
-			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5:
-				if not play_mode:
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8:
+				if not play_mode and key - KEY_1 < SHAPES.size():
 					set_shape(SHAPES[key - KEY_1])
+				elif on_foot():
+					combat.equip(combat.ORDER[key - KEY_1])
+					refresh_hud()
+			KEY_F:
+				if on_foot():
+					combat.attack()
 			KEY_C:
 				if not play_mode:
 					set_color((cur_color + 1) % COLORS.size())
@@ -1331,7 +1519,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 					undo()
 			KEY_R:
 				if driving:
-					buggy.right_side_up()
+					ride.right_side_up()
 				else:
 					flip()
 			KEY_ENTER, KEY_KP_ENTER:
@@ -1346,8 +1534,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 				if not play_mode:
 					remove_hovered()
 			KEY_I:
-				if not play_mode:
-					show_items(true)
+				show_items(true)
 			KEY_K:
 				if not play_mode:
 					show_menu(smash_menu, true)
@@ -1393,13 +1580,19 @@ func _process(delta: float) -> void:
 			var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
 			cam_target.x = flat.x
 			cam_target.z = flat.y
-	elif driving:
+	if play_mode and hearts < MAX_HEARTS:
+		heal_t += delta
+		if heal_t > 6.0:
+			heal_t = 0.0
+			hearts += 1
+			refresh_hud()
+	if driving:
 		# Chase cam: swing round behind the buggy (arrows still nudge it).
-		var f: Vector3 = buggy.global_basis.z
+		var f: Vector3 = ride.global_basis.z
 		var behind := atan2(-f.x, -f.z)
 		if Vector2(f.x, f.z).length() > 0.3 and not (Input.is_key_pressed(KEY_LEFT) or Input.is_key_pressed(KEY_RIGHT)):
 			cam_yaw = lerp_angle(cam_yaw, behind, 1.0 - exp(-2.5 * delta))
-		cam_target = cam_target.lerp(buggy.global_position + Vector3(0, 0.6, 0), 1.0 - exp(-12.0 * delta))
+		cam_target = cam_target.lerp(ride.global_position + Vector3(0, 0.6, 0), 1.0 - exp(-12.0 * delta))
 	elif play_mode:
 		cam_target = cam_target.lerp(player.global_position + Vector3(0, 0.35, 0), 1.0 - exp(-10.0 * delta))
 	if keys_live and not play_mode and place_item == "":
@@ -1429,6 +1622,12 @@ func _process(delta: float) -> void:
 			cam_dist = clampf(cam_dist * (1.0 - 1.2 * delta), 1.5, 40.0)
 
 	var off := Vector3(cos(cam_pitch) * sin(cam_yaw), sin(cam_pitch), cos(cam_pitch) * cos(cam_yaw)) * cam_dist
+	if play_mode:
+		# Out in the city: pull the camera in front of any wall that gets behind you.
+		var q := PhysicsRayQueryParameters3D.create(cam_target, cam_target + off * 1.05, 2)
+		var wall := get_world_3d().direct_space_state.intersect_ray(q)
+		if not wall.is_empty():
+			off = off.normalized() * maxf(cam_target.distance_to(wall.position) - 0.25, 0.4)
 	cam.global_position = cam_target + off
 	if shake > 0.0:
 		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * shake * 0.35
@@ -1443,9 +1642,11 @@ func _process(delta: float) -> void:
 	if Time.get_ticks_msec() < flash_until:
 		status_label.text = flash_text
 	elif driving:
-		status_label.text = "W gas  -  S brake / back up  -  A D steer  -  Enter to hop out"
+		var spec: Dictionary = Rides.RIDES[ride.kind]
+		var how := "" if spec.type == "car" else ("Space climb  -  " if spec.get("style") != "rocket" else "Space blast off  -  ")
+		status_label.text = "%s%s  -  G honk  -  Enter hop out" % [how, Rides.SPECIAL_TEXT[spec.special]]
 	elif near_buggy():
-		status_label.text = "Press Enter to hop in the buggy!"
+		status_label.text = "Press Enter to hop in the %s!" % Rides.RIDES[nearest_ride().kind].name
 	elif play_mode:
 		status_label.text = ""
 	elif place_item != "":
@@ -1463,13 +1664,16 @@ func _process(delta: float) -> void:
 	crosshair.visible = kb_aim and not play_mode and not menu_open() and not busy
 	# Clear the screen for the Smash! show.
 	(play_button.get_parent().get_parent() as Control).visible = not busy
-	help_panel.visible = help_visible and not busy
+	help_panel.visible = help_visible and not busy and not menu_open()
 	crosshair.position = aim_pos
 	crosshair.move_to_front()  # never hidden behind the controls card
 
 	if shot_path != "":
 		frame_count += 1
 		if frame_count == shot_frame:
+			for n in get_tree().get_nodes_in_group("npc"):
+				print("npc ", n.kind, " ", n.state, " ", (n as Node3D).global_position)
+			print("player ", player.global_position, " banner ", banner_label.text, " stars ", stars, " hearts ", hearts)
 			print("shot: buggy at %s, %d tiles, %d fps, %d draw calls" % [buggy.global_position, tiles.size(), Engine.get_frames_per_second(), RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME)])
 			await RenderingServer.frame_post_draw
 			get_viewport().get_texture().get_image().save_png(shot_path)
@@ -1582,12 +1786,63 @@ func setup_ui() -> void:
 	var item_entries: Array = []
 	for k in ITEMS:
 		item_entries.append({"id": k, "name": ITEMS[k].name, "icon": ITEMS[k].icon})
+	for k in Rides.RIDES:
+		item_entries.append({"id": k, "name": Rides.RIDES[k].name, "icon": "res://assets/vehicles/%s.png" % k})
 	items_menu = build_card_menu(layer, "Add something to your world", item_entries, choose_item)
 	smash_menu = build_card_menu(layer, "How should we SMASH it?", [
 		{"id": "giant", "name": "Giant Levi", "icon": "res://assets/giant/giant.png"},
 		{"id": "ball", "name": "Wrecking Ball", "icon": "res://assets/crane/crane.png"},
 	], func(kind): destroyer.start(kind))
 	setup_help(layer)
+
+	# Explore mode: hearts + stars, a weapon bar and big announcements.
+	hearts_label = Label.new()
+	hearts_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_RIGHT)
+	hearts_label.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	hearts_label.position = Vector2(-24, 14)
+	hearts_label.add_theme_font_size_override("font_size", 34)
+	hearts_label.add_theme_color_override("font_color", Color("ff5a6a"))
+	hearts_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
+	hearts_label.add_theme_constant_override("outline_size", 8)
+	layer.add_child(hearts_label)
+	banner_label = Label.new()
+	banner_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
+	banner_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	banner_label.position.y = 70
+	banner_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	banner_label.add_theme_font_size_override("font_size", 38)
+	banner_label.add_theme_color_override("font_color", Color("ffe066"))
+	banner_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
+	banner_label.add_theme_constant_override("outline_size", 12)
+	banner_label.modulate.a = 0.0
+	banner_label.resized.connect(func(): banner_label.pivot_offset = banner_label.size / 2)
+	layer.add_child(banner_label)
+	var wpanel := PanelContainer.new()
+	wpanel.add_theme_stylebox_override("panel", make_style(Color(0, 0, 0, 0.35), Color(0, 0, 0, 0), 0))
+	wpanel.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
+	wpanel.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	wpanel.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	wpanel.position.y -= 104
+	layer.add_child(wpanel)
+	weapon_bar = HBoxContainer.new()
+	weapon_bar.add_theme_constant_override("separation", 8)
+	wpanel.add_child(weapon_bar)
+	for i in combat.ORDER.size():
+		var w: String = combat.ORDER[i]
+		var b := add_button(weapon_bar, str(i + 1), Vector2(70, 70), func(): combat.equip(w); refresh_hud())
+		var icon := "res://assets/weapons/%s.png" % combat.MESH.get(w, "fists").to_lower()
+		if ResourceLoader.exists(icon):
+			b.icon = load(icon)
+			b.expand_icon = true
+			b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
+			b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		else:
+			b.text = "%d\n%s" % [i + 1, combat.WEAPONS[w].name.split(" ")[0]]
+			b.add_theme_font_size_override("font_size", 15)
+		b.tooltip_text = combat.WEAPONS[w].name
+		weapon_buttons[w] = b
+	var fight := add_button(weapon_bar, "F\nFight!", Vector2(84, 70), func(): combat.attack())
+	style_button(fight, Color("c0392b"), false)
 
 	# Aiming crosshair for keyboard building.
 	crosshair = Control.new()
@@ -1642,6 +1897,8 @@ func refresh_ui() -> void:
 	char_button.icon = load("res://assets/portraits/%s.png" % player.character)
 	style_button(char_button, Color("3a4a63"), false)
 	play_button.text = "Tab\nBuild!" if play_mode else "Tab\nPlay!"
+	items_button.visible = true
+	refresh_hud()
 	style_button(play_button, Color("2f9e55"), false)
 	refresh_help()
 
@@ -1682,10 +1939,17 @@ func refresh_help() -> void:
 		help_grid.remove_child(c)
 		c.queue_free()
 	var rows: Array
-	if driving:
+	if driving and Rides.RIDES[ride.kind].type == "fly":
+		rows = [
+			[["W", "S"], "Forward / back (plane: faster / slower)"], [["A", "D"], "Turn"],
+			[["Space"], "Up!"], [["Shift"], "Down"], [["F"], "Special move"], [["G"], "Honk"],
+			[["Left", "Right"], "Look around"], [["Q", "E"], "Zoom out / in"],
+			[["Enter"], "Hop out"], [["I"], "Get a different vehicle"], [["H"], "Hide this help"],
+		]
+	elif driving:
 		rows = [
 			[["W"], "Gas"], [["S"], "Brake / back up"], [["A", "D"], "Steer"],
-			[["Space"], "Handbrake"], [["R"], "Flip back over"],
+			[["Space"], "Handbrake"], [["F"], "Special move"], [["G"], "Honk"], [["R"], "Flip back over"],
 			[["Left", "Right"], "Look around"], [["Q", "E"], "Zoom out / in"],
 			[["Enter"], "Hop out"], [["H"], "Hide this help"],
 		]
@@ -1694,6 +1958,7 @@ func refresh_help() -> void:
 			[["W", "A", "S", "D"], "Walk"], [["Space"], "Jump"],
 			[["Left", "Right"], "Spin the camera"], [["Up", "Down"], "Look up / down"],
 			[["Q", "E"], "Zoom out / in"], [["Enter"], "Drive the buggy (walk up to it)"],
+			[["1", "-", "8"], "Pick a weapon"], [["F"], "Fight!"], [["I"], "Get a vehicle"],
 			[["Tab"], "Back to building"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
 		]
 	else:
@@ -1847,7 +2112,7 @@ func picker_key(key: int) -> void:
 func pick_character(c: String) -> void:
 	player.set_character(c)
 	if driving:
-		buggy.set_driver(c)
+		ride.set_driver(c)
 	save_settings({"character": c})
 	play_sfx(click_snd)
 	show_picker(false)
@@ -1929,7 +2194,18 @@ func save_world() -> void:
 		things.append({"i": it.item, "x": xf_to_arr(it.xform)})
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify({"tiles": arr, "items": things}))
+		f.store_string(JSON.stringify({"seed": city_seed, "tiles": arr, "items": things}))
+
+
+func saved_seed() -> int:
+	# The city this world was built in; a brand-new world rolls a new one.
+	if FileAccess.file_exists(SAVE_PATH):
+		var data = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
+		if data is Dictionary and data.has("seed"):
+			return int(data.seed)
+		if data is Dictionary or data is Array:
+			return 2026  # saved before cities had seeds: keep the city it was built in
+	return randi_range(1, 999999)
 
 
 static func xf_to_arr(x: Transform3D) -> Array:

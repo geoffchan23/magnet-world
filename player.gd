@@ -21,6 +21,10 @@ var phase := 0.0
 var idle_t := 0.0
 var air := 0.0
 var was_on_floor := true
+var swing_t := 0.0  # > 0 while an attack plays
+var swing_len := 0.35
+var swing_kind := "fists"
+var hurt_t := 0.0
 
 
 func set_character(name: String) -> void:
@@ -37,6 +41,9 @@ func set_character(name: String) -> void:
 		var node := model.find_child(n, true, false) as Node3D
 		if node:
 			parts[n] = {"node": node, "rest": node.transform}
+	# Re-attach whatever weapon was in hand.
+	if main and main.combat:
+		main.combat.equip.call_deferred(main.combat.current)
 	# Pop in.
 	visual.scale = Vector3(0.6, 1.3, 0.6)
 	create_tween().tween_property(visual, "scale", Vector3.ONE, 0.35).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
@@ -64,10 +71,19 @@ func _physics_process(delta: float) -> void:
 	var dir := fwd * -z + right * x
 	if dir.length() > 1.0:
 		dir = dir.normalized()
-	velocity.x = dir.x * SPEED
-	velocity.z = dir.z * SPEED
+	if hurt_t <= 0.0:
+		velocity.x = dir.x * SPEED
+		velocity.z = dir.z * SPEED
 
-	if is_on_floor() and Input.is_key_pressed(KEY_SPACE):
+	if main.menu_open() or main.busy:
+		dir = Vector3.ZERO
+		velocity.x = 0.0
+		velocity.z = 0.0
+	if hurt_t > 0.0:
+		hurt_t -= delta
+		velocity.x = move_toward(velocity.x, 0.0, 8.0 * delta)  # still sliding from the hit
+		velocity.z = move_toward(velocity.z, 0.0, 8.0 * delta)
+	if is_on_floor() and Input.is_key_pressed(KEY_SPACE) and not main.menu_open():
 		velocity.y = JUMP
 
 	move_and_slide()
@@ -81,6 +97,40 @@ func _physics_process(delta: float) -> void:
 		velocity = Vector3.ZERO
 
 	animate(delta)
+
+
+func hand() -> Node3D:
+	# A node at the end of the right arm, for holding weapons.
+	if not parts.has("ArmR"):
+		return null
+	var arm: Node3D = parts.ArmR.node
+	var h := arm.get_node_or_null("Hand") as Node3D
+	if h == null:
+		h = Node3D.new()
+		h.name = "Hand"
+		var lo := 0.0
+		var mi := arm as MeshInstance3D if arm is MeshInstance3D else arm.find_child("*", true, false) as MeshInstance3D
+		if mi:
+			var box := mi.get_aabb()
+			lo = box.position.y + box.size.y * 0.12
+			h.position = Vector3(box.get_center().x, lo, box.get_center().z)
+		arm.add_child(h)
+	return h
+
+
+func facing() -> Vector3:
+	var v := $Visual as Node3D
+	return Vector3(-sin(v.rotation.y), 0, -cos(v.rotation.y))
+
+
+func face(dir: Vector3) -> void:
+	($Visual as Node3D).rotation.y = atan2(-dir.x, -dir.z)
+
+
+func swing(length: float, kind: String) -> void:
+	swing_t = length
+	swing_len = length
+	swing_kind = kind
 
 
 func pose(part: String, rot: Vector3) -> void:
@@ -108,7 +158,19 @@ func animate(delta: float) -> void:
 	pose("LegR", Vector3(-swing + 0.35 * air, 0, 0))
 	# Arms swing opposite to legs; fling up and out when jumping.
 	pose("ArmL", Vector3(-swing * 0.9 + breathe * 0.04, 0, -0.15 * moving - 2.3 * air))
-	pose("ArmR", Vector3(swing * 0.9 - breathe * 0.04, 0, 0.15 * moving + 2.3 * air))
+	# Attacks: melee swings chop down from overhead; ranged weapons point forward.
+	swing_t -= delta
+	var k := clampf(1.0 - swing_t / swing_len, 0.0, 1.0) if swing_t > 0.0 else 1.0
+	var arm_r := Vector3(swing * 0.9 - breathe * 0.04, 0, 0.15 * moving + 2.3 * air)
+	var holding: bool = main and main.combat and main.combat.current != "fists"
+	if holding:
+		arm_r.x = -0.9 + swing * 0.2  # carry the weapon out in front
+	if swing_t > 0.0:
+		if main.combat.WEAPONS[swing_kind].melee:
+			arm_r = Vector3(lerpf(-2.8, -0.3, ease(k, 0.4)), 0, 0.2)
+		else:
+			arm_r = Vector3(-1.55, 0, 0.05 + (1.0 - k) * 0.15)
+	pose("ArmR", arm_r)
 	pose("Head", Vector3(0.06 * sin(phase * 2.0) * moving - 0.15 * air, 0.12 * sin(idle_t * 0.7) * (1.0 - moving), 0.06 * sin(idle_t * 1.3)))
 	pose("Tail", Vector3(0, sin(idle_t * (5.0 + 6.0 * moving)) * (0.25 + 0.2 * moving), 0))
 	pose("Body", Vector3(0, 0, 0.04 * sin(phase) * moving))
