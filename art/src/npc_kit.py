@@ -84,7 +84,7 @@ def _sr(scale, seg, ring, hero):
     return _d(seg, lo, hero), _d(ring, max(3, lo // 2), hero, even=False)
 
 
-def blob(name, center, radii, m, bumps=(), seg=28, ring=14, rot=None, hero=True, squash_below=None):
+def blob(name, center, radii, m, bumps=(), seg=28, ring=14, rot=None, hero=True, squash_below=None, keep=None):
     """One smooth ellipsoid with soft bumps pushed out of it: (direction, height, width_radians[, sweep]).
     Hair tufts, fur ruffs, goo drips: a single clean mesh instead of dozens of parts."""
     seg, ring = _d(seg, FLOOR.get(seg, 12), hero), _d(ring, 7, hero, even=False)
@@ -104,6 +104,9 @@ def blob(name, center, radii, m, bumps=(), seg=28, ring=14, rot=None, hero=True,
         if squash_below is not None and d.z < squash_below:
             d = Vector((d.x, d.y, squash_below + (d.z - squash_below) * 0.35))
         v.co = Vector((d.x * radii[0], d.y * radii[1], d.z * radii[2])) * 1.0 + d * off + sweep
+    if keep is not None:  # keep(unit_direction) -> bool; trims the shell (e.g. a bandana, a bib)
+        dead = [v for v in bm.verts if not keep(Vector((v.co.x / radii[0], v.co.y / radii[1], v.co.z / radii[2])))]
+        bmesh.ops.delete(bm, geom=dead, context="VERTS")
     bm.to_mesh(me)
     bm.free()
     o = toykit._obj(name, me, m, center)
@@ -314,7 +317,7 @@ def extents():
             Vector((max(p.x for p in pts), max(p.y for p in pts), max(p.z for p in pts))))
 
 
-def export(name, pivots):
+def export(name, pivots, parents=None):
     """Join each limb's parts into one node with its origin at pivots[limb]; write the glb."""
     groups = {}
     for o in mesh_objs():
@@ -338,6 +341,12 @@ def export(name, pivots):
         bpy.context.scene.cursor.location = Vector(pivots[g])
         bpy.ops.object.origin_set(type="ORIGIN_CURSOR")
         exported.append(ob)
+    by_name = {o.name: o for o in exported}
+    for child, par in (parents or {}).items():  # e.g. Jaw rides on Head
+        c, pa = by_name[child], by_name[par]
+        c.parent = pa
+        c.matrix_parent_inverse.identity()
+        c.location = Vector(pivots[child]) - Vector(pivots[par])
     bpy.ops.object.select_all(action="DESELECT")
     for o in exported:
         o.select_set(True)
@@ -348,7 +357,9 @@ def export(name, pivots):
         if g in groups:
             p = Vector(pivots[g])
             # Godot coords: (x, z, -y)
-            print(f"  NODE {g:9s} blender=({p.x:+.3f},{p.y:+.3f},{p.z:+.3f})  godot=({p.x:+.3f},{p.z:+.3f},{-p.y:+.3f})")
+            par = (parents or {}).get(g)
+            extra = f"  (child of {par})" if par else ""
+            print(f"  NODE {g:9s} blender=({p.x:+.3f},{p.y:+.3f},{p.z:+.3f})  godot=({p.x:+.3f},{p.z:+.3f},{-p.y:+.3f}){extra}")
     return out
 
 

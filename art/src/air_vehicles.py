@@ -489,7 +489,7 @@ def empty(name, loc, size=0.1):
     return e
 
 
-def decal(name, target, origin, direction, m, shape, spin=0.0, lift=0.004, up=None):
+def decal(name, target, origin, direction, m, shape, spin=0.0, lift=0.005, up=None, step=0.045):
     """Project flat 2D geometry onto target's surface. shape = list of polygons in (u, v) surface coords."""
     dg = bpy.context.evaluated_depsgraph_get()
     bvh = BVHTree.FromObject(target, dg)
@@ -505,17 +505,64 @@ def decal(name, target, origin, direction, m, shape, spin=0.0, lift=0.004, up=No
 
     def project(p):
         h = bvh.ray_cast(p + nrm * 0.08, -nrm, 0.2)
-        if h[0] is None:
-            return p
+        if h[0] is None or h[1].dot(nrm) < 0.2:
+            return None
         return h[0] + h[1] * lift
 
+    def vert(p):
+        q = project(p)
+        return bm.verts.new(q) if q is not None else None
+
+    STEP = step
     bm = bmesh.new()
-    for poly in shape:
-        vs = [bm.verts.new(project(hit + u * a + v * b)) for a, b in poly]
+
+    def tri(a, b, c):
+        a, b, c = Vector((*a, 0)), Vector((*b, 0)), Vector((*c, 0))
+        n = max(1, math.ceil(max((a - b).length, (b - c).length, (c - a).length) / STEP))
+        P = {}
+        for i in range(n + 1):
+            for j in range(n + 1 - i):
+                q = a + (b - a) * (i / n) + (c - a) * (j / n)
+                P[i, j] = vert(hit + u * q.x + v * q.y)
+        for i in range(n):
+            for j in range(n - i):
+                face(P[i, j], P[i + 1, j], P[i, j + 1])
+                if i + j + 1 < n:
+                    face(P[i + 1, j], P[i + 1, j + 1], P[i, j + 1])
+
+    def quad(a, b, c, d):
+        a, b, c, d = [Vector((*p, 0)) for p in (a, b, c, d)]
+        nu = max(1, math.ceil(max((b - a).length, (c - d).length) / STEP))
+        nv = max(1, math.ceil(max((d - a).length, (c - b).length) / STEP))
+        P = {}
+        for i in range(nu + 1):
+            for j in range(nv + 1):
+                s_, t_ = i / nu, j / nv
+                q = (a * (1 - s_) + b * s_) * (1 - t_) + (d * (1 - s_) + c * s_) * t_
+                P[i, j] = vert(hit + u * q.x + v * q.y)
+        for i in range(nu):
+            for j in range(nv):
+                face(P[i, j], P[i + 1, j], P[i + 1, j + 1], P[i, j + 1])
+
+    def face(*vs):
+        if any(v_ is None for v_ in vs):
+            return
         f = bm.faces.new(vs)
         f.normal_update()
         if f.normal.dot(nrm) < 0:
             f.normal_flip()
+
+    for poly in shape:
+        if len(poly) == 3:
+            tri(*poly)
+        elif len(poly) == 4:
+            quad(*poly)
+        else:
+            cx = sum(p[0] for p in poly) / len(poly)
+            cy = sum(p[1] for p in poly) / len(poly)
+            for k in range(len(poly)):
+                tri((cx, cy), poly[k], poly[(k + 1) % len(poly)])
+    bmesh.ops.delete(bm, geom=[v_ for v_ in bm.verts if not v_.link_faces], context="VERTS")
     return finish_obj(name, bm, m, smooth=False)
 
 
@@ -535,7 +582,7 @@ def disc_shape(r, seg=16, r_in=0.0, sub=1):
     return polys
 
 
-def rect_shape(w, h, nu=6, nv=2, cx=0.0, cy=0.0):
+def rect_shape(w, h, nu=1, nv=1, cx=0.0, cy=0.0):
     polys = []
     for i in range(nu):
         for j in range(nv):
@@ -911,16 +958,16 @@ def build_plane():
 
     # roundels on top of the wings and the fuselage sides
     for s in (-1, 1):
-        decal("RoundelO", wing, (s * 0.86, -0.22, 2), (0, 0, -1), NAVY, disc_shape(0.17, 20, 0.0, 1))
-        decal("RoundelS", wing, (s * 0.86, -0.22, 2), (0, 0, -1), CREAM, star_shape(0.15, 0.06), lift=0.007, up=-Y)
-        decal("RoundelB", wing, (s * 0.86, -0.22, -2), (0, 0, 1), NAVY, disc_shape(0.17, 20, 0.0, 1))
+        decal("RoundelO", wing, (s * 0.86, -0.22, 2), (0, 0, -1), NAVY, disc_shape(0.17, 16, 0.0, 1), step=0.09)
+        decal("RoundelS", wing, (s * 0.86, -0.22, 2), (0, 0, -1), CREAM, star_shape(0.15, 0.06), lift=0.008, up=-Y, step=0.09)
+        decal("RoundelB", wing, (s * 0.86, -0.22, -2), (0, 0, 1), NAVY, disc_shape(0.17, 16, 0.0, 1), step=0.09)
     # cream cheat-line stripe along each side + a racing number disc
     for s in (-1, 1):
-        decal("Stripe", fus, (s * 2, -0.18, 0.66), (-s, 0, 0), CREAM, rect_shape(0.85, 0.055, 12, 1, cx=0.0),
+        decal("Stripe", fus, (s * 2, -0.18, 0.66), (-s, 0, 0), CREAM, rect_shape(0.85, 0.055, cx=0.0), step=0.06,
               up=Z, spin=0.0)
-        decal("Stripe2", fus, (s * 2, -0.18, 0.66), (-s, 0, 0), CREAM, rect_shape(0.55, 0.03, 8, 1, cx=s * 0.22, cy=-0.07))
-        decal("NumDisc", fus, (s * 2, 0.32, 0.7), (-s, 0, 0), CREAM, disc_shape(0.095, 18, 0.0, 2))
-        decal("NumStar", fus, (s * 2, 0.32, 0.7), (-s, 0, 0), RED, star_shape(0.075, 0.03), lift=0.007, up=Z)
+        decal("Stripe2", fus, (s * 2, -0.18, 0.66), (-s, 0, 0), CREAM, rect_shape(0.55, 0.03, cx=s * 0.22, cy=-0.07), step=0.06)
+        decal("NumDisc", fus, (s * 2, 0.32, 0.7), (-s, 0, 0), CREAM, disc_shape(0.095, 14, 0.0, 1), step=0.05)
+        decal("NumStar", fus, (s * 2, 0.32, 0.7), (-s, 0, 0), RED, star_shape(0.075, 0.03), lift=0.008, up=Z, step=0.05)
 
     # tailplane + elevator, fin + rudder
     TZ, TTE = 0.765, 1.07
@@ -969,7 +1016,7 @@ def build_plane():
         rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(10)]
         decal("Rust", tgt, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 10) * rr[i] * asp, math.sin(2 * math.pi * i / 10) * rr[i])
                                              for i in range(10)]], spin=spin)
-    pt = decal("Patch", fus, (-2, -0.42, 0.74), (1, 0, 0), METAL, rect_shape(0.2, 0.14, 4, 2), up=Z, spin=0.12, lift=0.006)
+    pt = decal("Patch", fus, (-2, -0.42, 0.74), (1, 0, 0), METAL, rect_shape(0.2, 0.14), up=Z, spin=0.12, lift=0.006)
     for a, b in ((-0.08, -0.05), (0.08, -0.05), (-0.08, 0.05), (0.08, 0.05)):
         q = Quaternion(X, 0.12)
         p = Vector((-2, -0.42, 0.74)) + q @ Vector((0, a, b))
@@ -1034,7 +1081,7 @@ def sgnpow(v, e):
 
 def build_helicopter():
     C = common_mats()
-    PAINT = mat("Paint", "f7a800", 0.3, coat=0.6)
+    PAINT = mat("Paint", "ffc400", 0.3, coat=0.35)
     RED = mat("Red", "d42a1e", 0.32, coat=0.55)
     WHITE = mat("White", "f4f1ea", 0.32, coat=0.5)
     TRIM = mat("Trim", "2b2d33", 0.4, coat=0.3)
@@ -1069,13 +1116,15 @@ def build_helicopter():
     def hring(y, inset=0.0):
         zc, a, b, n = crom(HELI, y)
         a, b = a - inset, b - inset
-        sv = max(-0.95, min(0.95, (zline(y) - zc) / b))
+        yr = min(y, Y_GLASS)  # behind the canopy keep the same parametrisation so the quads don't twist
+        zr, _, br, _ = crom(HELI, yr)
+        sv = max(-0.95, min(0.95, (zline(yr) - zr) / (br - inset)))
         tl = math.asin(sgnpow(sv, n / 2))
         ts = [tl + (math.pi - 2 * tl) * k / NU for k in range(NU)] + \
              [math.pi - tl + (math.pi + 2 * tl) * k / NL for k in range(NL)]
         return [Vector((a * sgnpow(math.cos(t), 2 / n), y, zc + b * sgnpow(math.sin(t), 2 / n))) for t in ts]
 
-    ys = [-0.92 + 0.065 * i for i in range(26)]
+    ys = [-0.92 + 0.08 * i for i in range(22)]
     ys = [y for y in ys if y < 0.72]
     ys = sorted(set([round(y, 4) for y in ys] + [Y_GLASS]))
     ys += [0.85, 1.0, 1.2, 1.45, 1.7, 1.9, 2.02]
@@ -1136,8 +1185,8 @@ def build_helicopter():
         q = Euler((math.radians(25), 0, 0)).to_matrix()
         nrm = q @ Vector((0, 0, 1))
         c = Vector((gx, -0.74, 0.5)) + nrm * 0.082
-        ring("Gauge", c, nrm, 0.022, 0.03, 0.01, CHROME, seg=10, sides=(0, 1, 2))
-        disc("GaugeFace", c + nrm * 0.001, nrm, 0.024, WHITE, seg=10)
+        ring("Gauge", c, nrm, 0.022, 0.03, 0.01, CHROME, seg=8, sides=(0, 1, 2))
+        disc("GaugeFace", c + nrm * 0.001, nrm, 0.024, WHITE, seg=8)
     cyl("Cyclic", (0, SEAT.y - 0.14, 0.32), (0, SEAT.y - 0.22, 0.56), 0.012, BLACK, seg=6)
     blob("Grip", (0, SEAT.y - 0.225, 0.57), (0.02, 0.02, 0.035), BLACK, seg=8, rings=5)
     box("AidKit", (0.0, 0.25, 0.39), (0.26, 0.16, 0.14), WHITE, bevel=0.02, seg=2)
@@ -1146,18 +1195,20 @@ def build_helicopter():
 
     # engine cowling on the roof, intakes, exhausts, mast, beacon
     hsecs = []
-    for y, k in ((0.07, 0.55), (0.12, 0.9), (0.22, 1.0), (0.5, 1.0), (0.66, 0.85), (0.72, 0.45)):
-        hsecs.append(se_pts((0, y, 1.04), X, Z, 0.25 * k, 0.15 * (0.6 + 0.4 * k), 3.2, 20))
+    for y, k in ((0.07, 0.55), (0.12, 0.9), (0.22, 1.0), (0.5, 1.0), (0.63, 0.88), (0.71, 0.62), (0.75, 0.3)):
+        hsecs.append(se_pts((0, y, 1.04 + 0.03 * (1 - k)), X, Z, 0.25 * k, 0.15 * (0.6 + 0.4 * k), 3.2, 20))
+    hsecs.append(Vector((0, 0.765, 1.07)))
     hump = loft("Cowling", hsecs, PAINT)
     smooth_by_angle(hump, 50)
     for s in (-1, 1):
-        decal("Intake", hump, (s * 2, 0.2, 1.08), (-s, 0, 0), TRIM, rect_shape(0.14, 0.09, 3, 2), up=Z, lift=0.004)
+        decal("Intake", hump, (s * 2, 0.2, 1.08), (-s, 0, 0), TRIM, rect_shape(0.14, 0.09), up=Z)
         for k in range(4):
-            decal("Louvre", hump, (s * 2, 0.36 + k * 0.05, 1.07), (-s, 0, 0), BLACK, rect_shape(0.018, 0.08, 1, 2),
+            decal("Louvre", hump, (s * 2, 0.36 + k * 0.05, 1.07), (-s, 0, 0), BLACK, rect_shape(0.018, 0.08),
                   up=Z, lift=0.004)
-        tube("ExhaustPipe", [(s * 0.14, 0.6, 1.1), (s * 0.2, 0.72, 1.12), (s * 0.26, 0.8, 1.16)], 0.035, METAL, sides=8,
+        tube("ExhaustPipe", [(s * 0.14, 0.6, 1.1), (s * 0.2, 0.72, 1.12), (s * 0.26, 0.8, 1.16)], 0.035, METAL, sides=7,
              rad=0.05, n=2)
-        cyl("ExhaustTip", (s * 0.25, 0.79, 1.155), (s * 0.27, 0.82, 1.17), 0.038, BLACK, seg=8)
+        ring("ExhaustTip", Vector((s * 0.262, 0.805, 1.163)), Vector((s * 0.06, 0.8, 0.4)), 0.022, 0.04, 0.04, CHROME, seg=10)
+        disc("ExhaustHole", Vector((s * 0.257, 0.795, 1.16)), Vector((s * 0.06, 0.8, 0.4)), 0.024, BLACK, seg=8)
     cyl("Mast", (0, HUB.y, 1.15), (0, HUB.y, HUB.z - 0.05), 0.05, METAL, seg=10)
     cyl("Swash", (0, HUB.y, 1.24), (0, HUB.y, 1.27), 0.095, CHROME, seg=14)
     blob("BeaconLamp", (0, 0.66, 1.17), (0.04, 0.04, 0.035), BEACON, seg=10, rings=5)
@@ -1167,15 +1218,15 @@ def build_helicopter():
     cyl("SearchBody", (0, -0.66, 0.2), (0, -0.8, 0.17), 0.06, CHROME, seg=12, r1=0.07)
     disc("SearchLens", (0, -0.802, 0.169), (0, -1, -0.2), 0.062, LAMP, seg=12)
     for s in (-1, 1):
-        decal("Window", hull, (s * 2, 0.27, 0.84), (-s, 0, 0), WINDOW, rect_shape(0.26, 0.17, 4, 2), up=Z, lift=0.004)
-        for (w, h, cx, cy) in ((0.44, 0.012, 0.0, 0.2), (0.44, 0.012, 0.0, -0.3), (0.012, 0.5, 0.22, -0.05),
-                               (0.012, 0.5, -0.22, -0.05)):
-            decal("DoorLine", hull, (s * 2, 0.27, 0.71), (-s, 0, 0), TRIM, rect_shape(w, h, 6 if w > h else 1, 1 if w > h else 6, cx, cy),
+        decal("Window", hull, (s * 2, 0.3, 0.8), (-s, 0, 0), WINDOW, rect_shape(0.25, 0.15), up=Z)
+        for (w, h, cx, cy) in ((0.37, 0.014, 0.0, 0.25), (0.37, 0.014, 0.0, -0.25), (0.014, 0.5, 0.18, 0.0),
+                               (0.014, 0.5, -0.18, 0.0)):
+            decal("DoorLine", hull, (s * 2, 0.3, 0.67), (-s, 0, 0), TRIM, rect_shape(w, h, cx=cx, cy=cy), step=0.07,
                   up=Z, lift=0.003)
-        decal("CrossDisc", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), WHITE, disc_shape(0.1, 18, 0, 2), up=Z)
-        decal("CrossA", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), RED, rect_shape(0.13, 0.04, 4, 1), up=Z, lift=0.007)
-        decal("CrossB", hull, (s * 2, 0.95, 0.82), (-s, 0, 0), RED, rect_shape(0.04, 0.13, 1, 4), up=Z, lift=0.007)
-        decal("Stripe", hull, (s * 2, -0.25, 0.52), (-s, 0, 0), RED, rect_shape(1.25, 0.07, 14, 1, cx=0.12), up=Z)
+        decal("CrossDisc", hull, (s * 2, 0.86, 0.81), (-s, 0, 0), WHITE, disc_shape(0.095, 14, 0, 1), up=Z, step=0.035)
+        decal("CrossA", hull, (s * 2, 0.86, 0.81), (-s, 0, 0), RED, rect_shape(0.12, 0.04), up=Z, lift=0.009, step=0.03)
+        decal("CrossB", hull, (s * 2, 0.86, 0.81), (-s, 0, 0), RED, rect_shape(0.04, 0.12), up=Z, lift=0.009, step=0.03)
+        decal("Stripe", hull, (s * 2, -0.25, 0.52), (-s, 0, 0), RED, rect_shape(1.25, 0.07, cx=0.12 * s), up=Z, step=0.07)
         tube("DoorRail", [(s * 0.405, 0.04, 1.02), (s * 0.4, 0.55, 1.0)], 0.012, CHROME, sides=5, rad=0)
     hoist = [(-0.3, 0.18, 1.05), (-0.48, 0.18, 1.1), (-0.58, 0.18, 1.06)]
     tube("HoistArm", hoist, 0.03, WHITE, sides=8, rad=0.06, n=2)
@@ -1234,7 +1285,7 @@ def build_helicopter():
     # main rotor: hub + four blades (grey, red/white tips), origin at the hub
     new_group()
     cyl("HubBody", HUB - Z * 0.05, HUB + Z * 0.04, 0.08, METAL, seg=12)
-    blob("HubCap", HUB + Z * 0.04, (0.07, 0.07, 0.05), RED, seg=12, rings=6, squash=lambda z: 1.0 if z < 0 else 1.0)
+    blob("HubCap", HUB + Z * 0.04, (0.07, 0.07, 0.05), RED, seg=12, rings=5)
     for i in range(4):
         a = math.pi / 4 + math.pi / 2 * i
         rd = Vector((math.cos(a), math.sin(a), 0))
@@ -1272,8 +1323,124 @@ def build_helicopter():
     objs = [body, rotor, tail_rotor, seat]
     finish("helicopter", objs, SEAT)
 
+# =================================================================== ROCKET
+def build_rocket():
+    C = common_mats()
+    HULL = mat("Paint", "f3e9d2", 0.3, coat=0.55)
+    RED = mat("Red", "d42a1e", 0.3, coat=0.6)
+    TRIM = mat("Trim", "2b2d33", 0.4, coat=0.3)
+    INTERIOR = mat("Interior", "3c414b", 0.7)
+    SEATM = mat("SeatFabric", "c8402c", 0.5, coat=0.2)
+    PORT = mat("Window", "1d3550", 0.05, coat=0.9)
+    NOZZLE = mat("Nozzle", "3b3e45", 0.32, metal=1.0)
+    GLOW = mat("EngineGlow", "ff9a3c", 0.4, emit="ff7a1a", emit_strength=6.0)
+    TIP = mat("TipLight", "7dffb0", 0.2, emit="5dff9a", emit_strength=4.0)
+    BUTTON_R = mat("ButtonRed", "ff3b30", 0.3, emit="ff2a1a", emit_strength=1.5)
+    BUTTON_G = mat("ButtonGreen", "3bd16f", 0.3, emit="2ad16a", emit_strength=1.5)
+    CHROME, METAL, BLACK, GLASS = C["CHROME"], C["METAL"], C["BLACK"], C["GLASS"]
 
-BUILDERS = {"plane": build_plane, "helicopter": build_helicopter}
+    SEAT = Vector((0.0, 0.04, 1.37))
+    FLAME = Vector((0.0, 0.0, 0.11))
+    G0, G1 = 1.30, 1.93          # glass cockpit band
+    SEG = 32
+    FIN_ANG = [90, 210, 330]      # back, front-right, front-left
+
+    new_group()
+    # lower hull: skirt -> belly bulge -> shoulder under the cockpit
+    lower = [(0.0, 0.34), (0.2, 0.34), (0.3, 0.36), (0.36, 0.42), (0.41, 0.52), (0.445, 0.66), (0.462, 0.82),
+             (0.466, 0.98), (0.46, 1.12), (0.45, 1.22), (0.44, G0)]
+    hull = lathe("Hull", lower, [HULL, RED], seg=SEG, cap1=False,
+                 mat_fn=lambda p: 1 if (p.center.z < 0.45 or 1.13 < p.center.z) else 0)
+    lathe("Glass", [(0.44, G0), (0.445, 1.45), (0.442, 1.62), (0.43, 1.78), (0.415, G1)], GLASS, seg=SEG, cap0=False, cap1=False)
+    nose = [(0.415, G1), (0.405, 2.0), (0.385, 2.08), (0.35, 2.17), (0.3, 2.27), (0.235, 2.37), (0.165, 2.46),
+            (0.095, 2.54), (0.04, 2.6), (0.0, 2.62)]
+    lathe("Nose", nose, [RED, HULL], seg=SEG, cap0=False, mat_fn=lambda p: 1 if 2.1 < p.center.z < 2.17 else 0)
+    # chrome trim rings at the glass edges + interior floor and ceiling
+    for z, r in ((G0, 0.445), (G1, 0.42)):
+        tube("TrimRing", [Vector((math.cos(2 * math.pi * i / 32) * r, math.sin(2 * math.pi * i / 32) * r, z)) for i in range(32)],
+             0.022, CHROME, sides=6, rad=0, closed=True, up=Z)
+    disc("Floor", (0, 0, G0 + 0.005), Z, 0.43, INTERIOR, seg=SEG)
+    disc("Ceiling", (0, 0, G1 - 0.005), -Z, 0.41, INTERIOR, seg=SEG)
+    # window struts on the diagonals (front stays clear)
+    for a in (60, 120, 240, 300):
+        d = Vector((math.cos(math.radians(a)), math.sin(math.radians(a)), 0))
+        tube("Strut", [d * 0.445 + Z * G0, d * 0.452 + Z * 1.45, d * 0.448 + Z * 1.62, d * 0.435 + Z * 1.78, d * 0.42 + Z * G1],
+             0.016, CHROME, sides=6, rad=0)
+
+    # nozzle bell with a glowing throat
+    lathe("Nozzle", [(0.15, 0.36), (0.16, 0.3), (0.2, 0.2), (0.255, 0.12), (0.262, 0.105), (0.24, 0.105), (0.19, 0.17),
+                     (0.15, 0.24), (0.12, 0.3), (0.0, 0.31)], NOZZLE, seg=24, cap0=False, cap1=False)
+    disc("Throat", (0, 0, 0.305), -Z, 0.13, GLOW, seg=16)
+    tube("NozzleRing", [Vector((math.cos(2 * math.pi * i / 24) * 0.26, math.sin(2 * math.pi * i / 24) * 0.26, 0.112)) for i in range(24)],
+         0.014, CHROME, sides=5, rad=0, closed=True, up=Z)
+
+    # three swept fins, standing on chrome feet
+    fin_outline = fillet([(0.40, 1.12), (0.66, 0.82), (0.86, 0.44), (0.98, 0.1), (0.99, 0.02), (0.8, 0.02), (0.74, 0.2),
+                          (0.56, 0.38), (0.33, 0.44)], [0, 0.18, 0.2, 0.1, 0.03, 0.03, 0.1, 0.12, 0], n=3, closed=True)
+    fin_outline = [(p.x, p.y) for p in fin_outline]
+    for a in FIN_ANG:
+        M = TRS((0, 0, 0), (0, 0, a - 90))
+        extrude("Fin", fin_outline, 0.075, RED, bevel=0.024, seg=2, M=M, angle=40)
+        d = Vector((math.cos(math.radians(a)), math.sin(math.radians(a)), 0))
+        blob("Foot", d * 0.9 + Z * 0.045, (0.07, 0.07, 0.045), CHROME, seg=12, rings=6, rot=(0, 0, a))
+        # fin root fairing strip
+        box("FinRoot", d * 0.43 + Z * 0.78, (0.06, 0.06, 0.62), RED, bevel=0.02, seg=2, rot=(0, 0, a))
+
+    # front: two portholes and a riveted hatch, plus a red belly band of rivets
+    for z, r in ((0.98, 0.105), (0.68, 0.075)):
+        dirn = Vector((0, -1, 0))
+        c = Vector((0, -crom([(0.6, 0.445), (0.7, 0.455), (0.85, 0.462), (1.0, 0.466)], z)[0], z))
+        ring("Porthole", c + dirn * 0.005, dirn, r * 0.78, r, 0.03, CHROME, seg=16, sides=(0, 1, 2))
+        disc("PortGlass", c - dirn * 0.0, dirn, r * 0.8, PORT, seg=16)
+        for k in range(8):
+            t = 2 * math.pi * (k + 0.5) / 8
+            bolt(c + dirn * 0.018 + Vector((math.cos(t), 0, math.sin(t))) * r * 0.9, dirn, r=0.008)
+    for k in range(20):
+        t = 2 * math.pi * k / 20
+        d = Vector((math.cos(t), math.sin(t), 0))
+        bolt(d * 0.452 + Z * 1.21, d, r=0.01)
+    # hatch on the left side between the fins with a ladder below it
+    hd = Vector((math.cos(math.radians(30)), math.sin(math.radians(30)), 0))
+    decal("Hatch", hull, hd * 2 + Z * 0.88, -hd, TRIM, rect_shape(0.3, 0.42), up=Z, step=0.05)
+    decal("HatchIn", hull, hd * 2 + Z * 0.88, -hd, HULL, rect_shape(0.27, 0.39), up=Z, lift=0.008, step=0.05)
+    blob("HatchHandle", hd * 0.47 + Z * 0.88 + hd.cross(Z) * 0.09, (0.012, 0.012, 0.04), CHROME, seg=6, rings=4)
+    side = hd.cross(Z).normalized()
+    for s in (-1, 1):
+        tube("LadderRail", [hd * 0.44 + side * s * 0.085 + Z * 0.72, hd * 0.54 + side * s * 0.085 + Z * 0.66,
+                            hd * 0.66 + side * s * 0.085 + Z * 0.0], 0.017, CHROME, sides=6, rad=0.05, n=2)
+    for k in range(5):
+        t = (k + 0.6) / 5.4
+        p = hd * (0.54 + 0.12 * t) + Z * (0.66 * (1 - t))
+        tube("Rung", [p - side * 0.085, p + side * 0.085], 0.012, METAL, sides=6, rad=0)
+
+    # cockpit: bucket seat, console with buttons and a joystick
+    box("Cushion", (0, SEAT.y + 0.0, SEAT.z - 0.035), (0.3, 0.28, 0.07), SEATM, bevel=0.025, seg=2)
+    box("SeatBack", (0, SEAT.y + 0.17, SEAT.z + 0.1), (0.32, 0.07, 0.24), SEATM, bevel=0.03, seg=2, rot=(-10, 0, 0))
+    box("SeatBase", (0, SEAT.y + 0.02, (G0 + SEAT.z - 0.07) / 2), (0.2, 0.2, SEAT.z - 0.07 - G0), METAL, bevel=0.0)
+    box("Console", (0, -0.3, G0 + 0.09), (0.36, 0.14, 0.18), TRIM, bevel=0.03, seg=2)
+    box("ConsoleTop", (0, -0.29, G0 + 0.19), (0.34, 0.16, 0.04), TRIM, bevel=0.012, seg=1, rot=(-20, 0, 0))
+    for k, (bx, m) in enumerate(((-0.11, BUTTON_R), (-0.05, BUTTON_G), (0.05, BUTTON_G), (0.11, BUTTON_R))):
+        blob("Button", (bx, -0.29, G0 + 0.215), (0.018, 0.018, 0.012), m, seg=8, rings=4)
+    cyl("Joystick", (0, -0.2, G0 + 0.12), (0, -0.2, G0 + 0.24), 0.012, BLACK, seg=6)
+    blob("JoyKnob", (0, -0.2, G0 + 0.25), 0.026, RED, seg=8, rings=5)
+
+    # antenna + tip light
+    cyl("Antenna", (0, 0, 2.6), (0, 0, 2.76), 0.012, CHROME, seg=6)
+    blob("TipBall", (0, 0, 2.78), 0.03, TIP, seg=10, rings=6)
+
+    # wear
+    for o, d, sz, asp, spin in [((2, -0.3, 0.6), (-1, 0.3, 0), 0.05, 1.5, 0.2), ((-2, 0.2, 1.0), (1, -0.1, 0), 0.04, 1.6, -0.3),
+                                ((0.3, 2, 0.75), (-0.15, -1, 0), 0.045, 1.4, 0.6)]:
+        rr = [sz * (0.6 + 0.4 * random.random()) for _ in range(12)]
+        decal("Rust", hull, o, d, C["RUST"], [[(math.cos(2 * math.pi * i / 12) * rr[i] * asp,
+                                                math.sin(2 * math.pi * i / 12) * rr[i]) for i in range(12)]], spin=spin)
+    body = collapse("Body", GROUP)
+    seat = empty("Seat", SEAT)
+    flame = empty("Flame", FLAME)
+    finish("rocket", [body, seat, flame], SEAT, thumb_dir=(2.4, -3.3, 1.2))
+
+
+BUILDERS = {"plane": build_plane, "helicopter": build_helicopter, "rocket": build_rocket}
 
 
 def reset():

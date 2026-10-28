@@ -301,15 +301,26 @@ func animate(delta: float, hspeed: float) -> void:
 	var s := sin(phase) * 0.8 * moving
 	var atk := clampf(swing_t / 0.4, 0.0, 1.0)
 	var strike := sin(atk * PI)  # 0 -> 1 -> 0 over the swing
-	# Legs: alternate left/right, and front/back pairs on many-legged things.
+	# Legs: Leg<L|R><n>. Two legs walk left/right; four legs walk in diagonal
+	# pairs (LegL2 with LegR); spiders (1-4 a side) stride in two alternating
+	# groups, swinging sideways-sticking legs about Y and lifting about Z.
 	for n in parts:
 		var name: String = n
-		if name.begins_with("Leg"):
-			var side := 1.0 if name.contains("L") else -1.0
-			var idx := name.to_int()  # LegL2 -> 2
-			var flip := 1.0 if idx % 2 == 0 else -1.0
-			pose(name, Vector3(s * side * flip, 0, 0))
-		elif name.begins_with("Wing"):
+		if name.begins_with("Leg") and name.length() >= 4:
+			var left := name[3] == "L"
+			var side := 1.0 if left else -1.0
+			var idx := name.substr(4).to_int()  # LegL -> 0, LegL2 -> 2
+			if parts.has("LegL4"):
+				var group := 1.0 if (idx + (0 if left else 1)) % 2 == 1 else -1.0
+				var g := sin(phase * 1.4) * group * moving
+				pose(name, Vector3(0, g * 0.45, maxf(g, 0.0) * 0.5 * side))
+			elif idx == 2:
+				pose(name, Vector3(-s * side, 0, 0))  # back legs move with the opposite front leg
+			else:
+				pose(name, Vector3(s * side, 0, 0))
+	for n in parts:
+		var name: String = n
+		if name.begins_with("Wing"):
 			pose(name, Vector3(0, 0, sin(idle_t * 14.0) * 0.5 * (1.0 if name.ends_with("L") else -1.0)))
 		elif name.begins_with("Blob"):
 			var sq := 1.0 + sin(idle_t * 6.0 + name.hash() % 7) * 0.08

@@ -197,6 +197,15 @@ func _ready() -> void:
 		elif a.begins_with("--ride="):
 			set_play(true)
 			summon_ride(a.substr(7))
+		elif a == "--lineup":
+			# Testing: every person and creature in a row, frozen mid-walk.
+			var i := 0
+			for k in preload("res://npc.gd").KINDS:
+				var n: Node3D = encounters.spawn(k, cam_target + Vector3((i - 4) * 0.75, 0.05, 0))
+				n.visual.rotation.y = PI
+				n.set_physics_process(false)
+				n.animate(0.12, 1.0)
+				i += 1
 		elif a.begins_with("--scenario="):
 			encounters.force_next = a.substr(11)
 		elif a == "--drive":
