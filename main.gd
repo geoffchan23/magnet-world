@@ -264,6 +264,22 @@ func _ready() -> void:
 			cam_yaw = 0.5
 			cam_pitch = 0.5
 			cam_dist = 26.0
+		elif a.begins_with("--step="):
+			# Testing: a big flat tile this high, just in front of the player (can you jump onto it?).
+			set_play(true)
+			cam_yaw = 0.0
+			var h := float(a.substr(7))
+			spawn_tile("big", 1, Transform3D(Basis(), player.global_position + Vector3(0, h, -1.6)))
+		elif a == "--indoors":
+			# Testing: just inside the nearest enterable building's door.
+			set_play(true)
+			var best: Dictionary = city.doors[0]
+			for d in city.doors:
+				if (d.pos as Vector3).length() < (best.pos as Vector3).length():
+					best = d
+			player.global_position = best.pos - (best.out as Vector3) * 1.6 + Vector3(0, 0.3, 0)
+			cam_target = player.global_position
+			cam_yaw = atan2(best.out.x, best.out.z)
 		elif a == "--drive":
 			set_play(true)
 			enter_buggy(buggy)
@@ -1727,6 +1743,14 @@ func _process(delta: float) -> void:
 		var wall := get_world_3d().direct_space_state.intersect_ray(q)
 		if not wall.is_empty():
 			off = off.normalized() * maxf(cam_target.distance_to(wall.position) - 0.25, 0.4)
+	if play_mode and city.indoors_at(cam_target):
+		# Inside a building: keep the camera under the ceiling and inside the walls.
+		var ceil: float = city.ceiling_above(cam_target)
+		off.y = minf(off.y, ceil - 0.15 - cam_target.y)
+		var q2 := PhysicsRayQueryParameters3D.create(cam_target, cam_target + off * 1.05, 2)
+		var wall2 := get_world_3d().direct_space_state.intersect_ray(q2)
+		if not wall2.is_empty():
+			off = off.normalized() * maxf(cam_target.distance_to(wall2.position) - 0.2, 0.35)
 	cam.global_position = cam_target + off
 	if shake > 0.0:
 		cam.global_position += Vector3(randf_range(-1, 1), randf_range(-1, 1), randf_range(-1, 1)) * shake * 0.35

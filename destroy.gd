@@ -9,6 +9,7 @@ extends Node3D
 const DEBRIS_LAYER := 8
 const HITTER_LAYER := 16
 const DEBRIS_LIFETIME := 14.0
+const SMASH_RANGE := 30.0  # a smash only wrecks tiles this close (builds can be all over the city)
 
 var main: Node3D
 var running := false
@@ -25,8 +26,8 @@ var radius := 1.0
 func start(kind: String) -> void:
 	if running:
 		return
-	if main.tiles.is_empty():
-		main.flash("Build something first - then smash it!")
+	if near_tiles(main.cam_target).is_empty():
+		main.flash("Build something here first - then smash it!")
 		return
 	if kind.begins_with("giant:"):
 		forced_attack = kind.substr(6)
@@ -42,10 +43,20 @@ func start(kind: String) -> void:
 	running = false
 
 
+func near_tiles(p: Vector3) -> Array:
+	# Builds can be anywhere in the city now: only the one you're at gets smashed.
+	var out := []
+	for t in main.tiles:
+		var o: Vector3 = t.xform.origin
+		if Vector2(o.x - p.x, o.z - p.z).length() < SMASH_RANGE:
+			out.append(t)
+	return out
+
+
 func measure() -> void:
 	var lo := Vector3(INF, INF, INF)
 	var hi := Vector3(-INF, -INF, -INF)
-	for t in main.tiles:
+	for t in near_tiles(main.cam_target):
 		for p in t.verts:
 			lo = lo.min(p)
 			hi = hi.max(p)
@@ -67,12 +78,15 @@ func frame_camera(look_dir: Vector3, dist: float, look_height: float) -> void:
 
 func shatter(impact: Vector3, push: Vector3, strength: float, reach: float) -> void:
 	# Turn every tile into a flying piece; record the whole structure for undo.
+	var hit := near_tiles(impact)
+	if hit.is_empty():
+		return
 	var snapshot: Array = []
-	for t in main.tiles:
+	for t in hit:
 		snapshot.append({"shape": t.shape, "color": t.color, "xform": t.xform})
 	var rng := RandomNumberGenerator.new()
 	rng.randomize()
-	for t in main.tiles.duplicate():
+	for t in hit:
 		var xf: Transform3D = t.xform
 		var body := RigidBody3D.new()
 		body.collision_layer = DEBRIS_LAYER
@@ -310,8 +324,9 @@ func giant_show() -> void:
 	var dir := Vector3(cos(a), 0, sin(a))  # from structure towards where the giant lands
 	var reach: float = {"stomp": 0.22, "kick": 0.42, "swipe": 0.45, "smash": 0.5}[attack] * size + radius * 0.4
 	var land: Vector3 = centre + dir * (reach + size * 0.9)
-	var flat := Vector2(land.x, land.z).limit_length(main.BUILD_R + 1.0)
-	land = Vector3(flat.x, 0, flat.y)
+	if Vector2(centre.x, centre.z).length() < main.BUILD_R:
+		var flat := Vector2(land.x, land.z).limit_length(main.BUILD_R + 1.0)  # stay in the lot
+		land = Vector3(flat.x, 0, flat.y)
 
 	giant = make_giant(size)
 	add_child(giant)
