@@ -5,10 +5,10 @@ extends CharacterBody3D
 ## Tail) whose origins sit at the joints, so walking is just swinging those parts.
 
 const SPEED := 2.6
-const JUMP := 5.6
+const JUMP := 6.2  # clears a 1 m tile step
 const GRAVITY := 14.0
 const MODEL_SCALE := 0.55
-const PARTS := ["Body", "Head", "ArmL", "ArmR", "LegL", "LegR", "Tail"]
+const PARTS := ["Body", "Head", "ArmL", "ArmR", "LegL", "LegR", "Tail", "Cape", "WingL", "WingR"]
 
 var main: Node3D
 var spawn := Vector3(0, 2, 0)
@@ -31,7 +31,7 @@ func set_character(name: String) -> void:
 	character = name
 	if model:
 		model.queue_free()
-	model = (load("res://assets/characters/%s.glb" % name) as PackedScene).instantiate()
+	model = (load(model_path(name)) as PackedScene).instantiate()
 	model.scale = Vector3.ONE * MODEL_SCALE
 	model.rotation.y = PI  # models face +Z after import; Visual faces -Z
 	var visual := $Visual as Node3D
@@ -47,6 +47,12 @@ func set_character(name: String) -> void:
 	# Pop in.
 	visual.scale = Vector3(0.6, 1.3, 0.6)
 	create_tween().tween_property(visual, "scale", Vector3.ONE, 0.35).set_trans(Tween.TRANS_ELASTIC).set_ease(Tween.EASE_OUT)
+
+
+static func model_path(hero: String) -> String:
+	# Heroes live in assets/characters/hero_<name>.glb (the kid stands in until one exists).
+	var p := "res://assets/characters/hero_%s.glb" % hero
+	return p if ResourceLoader.exists(p) else "res://assets/characters/kid.glb"
 
 
 func _physics_process(delta: float) -> void:
@@ -166,13 +172,18 @@ func animate(delta: float) -> void:
 	if holding:
 		arm_r.x = -0.9 + swing * 0.2  # carry the weapon out in front
 	if swing_t > 0.0:
-		if main.combat.WEAPONS[swing_kind].melee:
+		if main.combat.weapon_info(swing_kind).melee:
 			arm_r = Vector3(lerpf(-2.8, -0.3, ease(k, 0.4)), 0, 0.2)
 		else:
 			arm_r = Vector3(-1.55, 0, 0.05 + (1.0 - k) * 0.15)
 	pose("ArmR", arm_r)
 	pose("Head", Vector3(0.06 * sin(phase * 2.0) * moving - 0.15 * air, 0.12 * sin(idle_t * 0.7) * (1.0 - moving), 0.06 * sin(idle_t * 1.3)))
 	pose("Tail", Vector3(0, sin(idle_t * (5.0 + 6.0 * moving)) * (0.25 + 0.2 * moving), 0))
+	# Capes stream out behind when running or falling; wings flap in the air.
+	pose("Cape", Vector3(0.12 + 0.55 * moving + 0.6 * air + 0.05 * sin(idle_t * 3.0 + phase), 0, 0.04 * sin(phase)))
+	var flap := sin(idle_t * (16.0 if air > 0.3 else 2.0)) * (0.5 * air + 0.06)
+	pose("WingL", Vector3(0, 0, flap))
+	pose("WingR", Vector3(0, 0, -flap))
 	pose("Body", Vector3(0, 0, 0.04 * sin(phase) * moving))
 
 	# Bouncy steps and a little squash when landing.

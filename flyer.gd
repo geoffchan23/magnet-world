@@ -45,7 +45,7 @@ func setup(at: Transform3D, k: String) -> void:
 	style = spec.style
 	spawn_xf = at
 	collision_layer = LAYER
-	collision_mask = 1 | 2 | LAYER
+	collision_mask = 1 | 2 | LAYER | 256  # 256: stone-site force fields
 	model_root = Node3D.new()
 	add_child(model_root)
 	var path := Rides.model_path(k)

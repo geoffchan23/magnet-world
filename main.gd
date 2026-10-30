@@ -14,9 +14,17 @@ const COLORS := [
 const SHAPES := ["square", "triangle", "right", "tall", "big"]
 const SAVE_PATH := "user://world.json"
 const SETTINGS_PATH := "user://settings.json"
-const CHARACTERS := ["kid", "fox", "robot", "dino"]
-const CHARACTER_NAMES := {"kid": "Kid", "fox": "Fox", "robot": "Robot", "dino": "Dino"}
-const BUILD_R := 12.5  # radius of the build area in the middle of the lot
+const CHARACTERS := ["spider_man", "iron_man", "captain_america", "thor", "hulk", "black_widow",
+	"hawkeye", "black_panther", "doctor_strange", "captain_marvel", "scarlet_witch", "vision",
+	"ant_man", "wasp", "falcon", "war_machine", "winter_soldier"]
+const CHARACTER_NAMES := {"spider_man": "Spider-Man", "iron_man": "Iron Man", "captain_america": "Captain America",
+	"thor": "Thor", "hulk": "Hulk", "black_widow": "Black Widow", "hawkeye": "Hawkeye", "black_panther": "Black Panther",
+	"doctor_strange": "Doctor Strange", "captain_marvel": "Captain Marvel", "scarlet_witch": "Scarlet Witch",
+	"vision": "Vision", "ant_man": "Ant-Man", "wasp": "Wasp", "falcon": "Falcon", "war_machine": "War Machine",
+	"winter_soldier": "Winter Soldier"}
+const PICKER_COLS := 6
+const BUILD_R := 12.5  # radius of the dirt lot's build grid in the middle of the city
+const BUILD_REACH := 24.0  # you can build this far from where you were standing
 const ITEMS := {
 	"couch": {"name": "Our Living Room Couch", "scene": "res://assets/items/couch.glb",
 		"icon": "res://assets/items/couch.png", "scale": 0.5},
@@ -65,6 +73,7 @@ var buggy: Node3D  # vehicle.gd: the one parked by the lot at the start
 var rides: Array = []  # every vehicle out in the world
 var ride: Node3D  # the one you're driving (vehicle.gd or flyer.gd)
 const Rides := preload("res://rides.gd")
+const City := preload("res://city.gd")
 const MAX_RIDES := 6
 var driving := false
 var combat: Node3D  # combat.gd: weapons, shots, explosions
@@ -82,6 +91,12 @@ var click_snd: AudioStreamWAV
 var pop_snd: AudioStreamWAV
 
 var orbiting := false
+var stones: Node3D  # the Infinity Stone sites (stones.gd)
+var powers: Node3D  # the Infinity Gauntlet's powers (powers.gd)
+var stone_blocks := {}
+var shield_t := 0.0  # Soul Stone's golden shield
+var build_centre := Vector3.ZERO  # where you were when you started building
+var play_return = null  # where the explorer goes back to after building (null: drop at the camera)
 var touch_ui := false  # the iPad's on-screen controls are showing
 var right_press_pos := Vector2.ZERO
 var right_moved := false
@@ -169,6 +184,17 @@ func _ready() -> void:
 	encounters.set_script(preload("res://encounters.gd"))
 	encounters.main = self
 	add_child(encounters)
+	stones = Node3D.new()
+	stones.set_script(preload("res://stones.gd"))
+	stones.main = self
+	add_child(stones)
+	if not demo:
+		stones.load_state(saved_data().get("stones", {}))
+	stones.build(stone_blocks)
+	powers = Node3D.new()
+	powers.set_script(preload("res://powers.gd"))
+	powers.main = self
+	add_child(powers)
 	destroyer = Node3D.new()
 	destroyer.set_script(preload("res://destroy.gd"))
 	destroyer.main = self
@@ -209,6 +235,27 @@ func _ready() -> void:
 				i += 1
 		elif a.begins_with("--scenario="):
 			encounters.force_next = a.substr(11)
+		elif a.begins_with("--goto="):
+			# Testing: stand just outside an Infinity Stone site (e.g. --goto=mind).
+			set_play(true)
+			var c: Vector3 = stones.sites[a.substr(7)].centre
+			player.global_position = c + Vector3(0, 0.5, 13.0)
+			cam_target = player.global_position
+			cam_yaw = 0.0
+			cam_pitch = 0.35
+			cam_dist = 14.0
+		elif a.begins_with("--grab="):
+			# Testing: put the player right on a stone (comma-separated list).
+			set_play(true)
+			for st in a.substr(7).split(","):
+				var c: Vector3 = stones.sites[st].centre
+				player.global_position = stones.sites[st].stone_node.global_position - Vector3(0, 0.3, 0)
+				stones._physics_process(0.016)
+			player.global_position += Vector3(0, 0.5, 0)
+			cam_target = player.global_position
+		elif a.begins_with("--mouse="):
+			var m := a.substr(8).split_floats(",")
+			get_viewport().warp_mouse.call_deferred(Vector2(m[0], m[1]))
 		elif a == "--drive":
 			set_play(true)
 			enter_buggy(buggy)
@@ -266,7 +313,8 @@ func setup_world() -> void:
 	city = Node3D.new()
 	city.set_script(preload("res://city.gd"))
 	add_child(city)
-	city.build(city_seed)
+	stone_blocks = preload("res://stones.gd").pick_blocks(city_seed)
+	city.build(city_seed, stone_blocks.values())
 	scatter_grass.call_deferred()
 
 	cam = Camera3D.new()
@@ -383,7 +431,8 @@ func setup_player() -> void:
 	visual.name = "Visual"
 	player.add_child(visual)
 	add_child(player)
-	player.set_character(load_settings().get("character", "kid"))
+	var who: String = load_settings().get("character", "spider_man")
+	player.set_character(who if who in CHARACTERS else "spider_man")
 	set_player_active(false)
 
 func setup_buggy() -> void:
@@ -412,6 +461,9 @@ func summon_ride(kind: String) -> void:
 		exit_buggy()
 	if not play_mode:
 		set_play(true)
+	if stones.inside_field(player.global_position, 2.5):
+		banner("No vehicles inside the force field - heroes go on foot!")
+		return
 	var here := player.global_position
 	var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))  # facing the way you're looking
 	var spot := here + fwd * 2.2
@@ -452,6 +504,9 @@ func driven_vehicle() -> Node3D:
 func hurt_player(damage: int, from: Vector3) -> void:
 	if player.hurt_t > 0.0:
 		return  # just got hit: a moment to get away
+	if shield_t > 0.0:
+		combat.sparkles(player.global_position + Vector3(0, 0.3, 0), Color("ffb040"), 12, 0.6)
+		return  # the Soul Stone's shield soaks it up
 	hearts -= damage
 	var away := player.global_position - from
 	away.y = 0
@@ -490,7 +545,7 @@ func banner(text: String) -> void:
 	banner_label.scale = Vector2(0.6, 0.6)
 	var tw := create_tween()
 	tw.tween_property(banner_label, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_interval(3.0)
+	tw.tween_interval(2.5 + text.length() / 25.0)  # long ones stay up long enough to read
 	tw.tween_property(banner_label, "modulate:a", 0.0, 0.6)
 
 
@@ -502,6 +557,13 @@ func refresh_hud() -> void:
 	weapon_bar.get_parent().visible = play_mode and not driving
 	for w in weapon_buttons:
 		style_button(weapon_buttons[w], Color("3a4a63"), w == combat.current)
+	if weapon_buttons.has("fists"):
+		# Slot 1 is your hero's own move.
+		var b: Button = weapon_buttons.fists
+		b.text = "1\n%s" % combat.weapon_info("fists").name.split(" ")[0]
+		b.tooltip_text = combat.weapon_info("fists").name
+	if powers:
+		powers.refresh()
 
 
 func near_buggy() -> bool:
@@ -927,9 +989,9 @@ func refine(f: Dictionary, cluster: Array, side: Vector3, free_local: Array, nea
 func ground_candidates(hit: Vector3, shape: String) -> Array:
 	var c: Vector3
 	if shape == "big":
-		c = Vector3(roundf(hit.x), 0, roundf(hit.z))
+		c = Vector3(roundf(hit.x), hit.y, roundf(hit.z))
 	else:
-		c = Vector3(floorf(hit.x) + 0.5, 0, floorf(hit.z) + 0.5)
+		c = Vector3(floorf(hit.x) + 0.5, hit.y, floorf(hit.z) + 0.5)
 	var rot := Basis(Vector3.UP, ground_rot * PI / 2)
 	var v := shape_verts(shape)
 	var off := Vector3.ZERO
@@ -1005,7 +1067,8 @@ func update_hover() -> void:
 			hinge_axis = (bv[(ei + 1) % bv.size()] - bv[ei]).normalized()
 			gather_near_verts(hinge_pivot)
 	else:
-		if erase_mode or pos.y < -0.05 or Vector2(pos.x, pos.z).length() > BUILD_R:
+		# Any flat-ish surface in reach: the ground, a rooftop, a ledge...
+		if erase_mode or (hit.normal as Vector3).y < 0.7 or not in_reach(pos) or stones.blocks_build(pos):
 			return
 		var key := "g%d:%d:%s:%d:%d" % [floori(pos.x * 2), floori(pos.z * 2), cur_shape, ground_rot, tiles.size()]
 		if key != hover_key:
@@ -1288,8 +1351,8 @@ func update_item_hover() -> void:
 	if hit.is_empty():
 		return
 	var pos: Vector3 = hit.position
-	item_ghost_xf = Transform3D(Basis(Vector3.UP, item_rot * PI / 4), Vector3(snappedf(pos.x, 0.5), 0.0, snappedf(pos.z, 0.5)))
-	item_ghost_ok = pos.y > -0.05 and Vector2(pos.x, pos.z).length() < BUILD_R - 0.6
+	item_ghost_xf = Transform3D(Basis(Vector3.UP, item_rot * PI / 4), Vector3(snappedf(pos.x, 0.5), pos.y, snappedf(pos.z, 0.5)))
+	item_ghost_ok = (hit.normal as Vector3).y > 0.7 and in_reach(pos)
 	for it in items:
 		if (it.xform.origin as Vector3).distance_to(item_ghost_xf.origin) < 0.9:
 			item_ghost_ok = false
@@ -1463,9 +1526,13 @@ func pan_camera(screen_delta: Vector2) -> void:
 
 func move_camera(by: Vector3) -> void:
 	cam_target += by
-	var flat := Vector2(cam_target.x, cam_target.z).limit_length(BUILD_R + 4.0)
-	cam_target.x = flat.x
-	cam_target.z = flat.y
+	var flat := Vector2(cam_target.x - build_centre.x, cam_target.z - build_centre.z).limit_length(BUILD_REACH + 4.0)
+	cam_target.x = build_centre.x + flat.x
+	cam_target.z = build_centre.z + flat.y
+
+
+func in_reach(p: Vector3) -> bool:
+	return Vector2(p.x - build_centre.x, p.z - build_centre.z).length() < BUILD_REACH
 
 
 func _unhandled_input(ev: InputEvent) -> void:
@@ -1530,7 +1597,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 				menu_key(menu, key)
 				return
 		match key:
-			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8:
+			KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9:
 				if not play_mode and key - KEY_1 < SHAPES.size():
 					set_shape(SHAPES[key - KEY_1])
 				elif on_foot():
@@ -1539,6 +1606,9 @@ func _unhandled_input(ev: InputEvent) -> void:
 			KEY_F:
 				if on_foot():
 					combat.attack()
+			KEY_T:
+				if on_foot():
+					powers.next_stone()
 			KEY_C:
 				if not play_mode:
 					set_color((cur_color + 1) % COLORS.size())
@@ -1598,6 +1668,9 @@ func _process(delta: float) -> void:
 			var fwd := Vector3(-sin(cam_yaw), 0, -cos(cam_yaw))
 			var right := Vector3(cos(cam_yaw), 0, -sin(cam_yaw))
 			move_camera((right * dir.x + fwd * dir.y).normalized() * clampf(cam_dist * 0.8, 3.0, 14.0) * delta)
+	shield_t = maxf(shield_t - delta, 0.0)
+	if shield_t > 0.0 and Engine.get_process_frames() % 6 == 0:
+		combat.sparkles(player.global_position + Vector3(0, 0.3, 0), Color("ffc060"), 2, 0.3)
 	if play_mode and hearts < MAX_HEARTS:
 		heal_t += delta
 		if heal_t > 6.0:
@@ -1640,7 +1713,7 @@ func _process(delta: float) -> void:
 			cam_dist = clampf(cam_dist * (1.0 - 1.2 * delta), 1.5, 40.0)
 
 	var off := Vector3(cos(cam_pitch) * sin(cam_yaw), sin(cam_pitch), cos(cam_pitch) * cos(cam_yaw)) * cam_dist
-	if play_mode:
+	if play_mode or Vector2(cam_target.x, cam_target.z).length() > City.LOT_HALF:
 		# Out in the city: pull the camera in front of any wall that gets behind you.
 		var q := PhysicsRayQueryParameters3D.create(cam_target, cam_target + off * 1.05, 2)
 		var wall := get_world_3d().direct_space_state.intersect_ray(q)
@@ -1718,10 +1791,16 @@ func set_erase(on: bool) -> void:
 func set_play(on: bool) -> void:
 	if driving and not on:
 		exit_buggy()
+	if play_mode and not on:
+		# Build right where you are: on a rooftop, by a stone site, anywhere.
+		build_centre = player.global_position
+		play_return = player.global_position
+		cam_target = player.global_position + Vector3(0, 0.35, 0)
 	play_mode = on
 	if on:
 		erase_mode = false
-		var drop := cam_target + Vector3(0, 2.5, 0)
+		# Back where you were standing (a fresh game drops you where the camera looks).
+		var drop: Vector3 = play_return + Vector3(0, 0.3, 0) if play_return != null else cam_target + Vector3(0, 2.5, 0)
 		player.spawn = drop
 		player.global_position = drop
 		player.velocity = Vector3.ZERO
@@ -1828,11 +1907,13 @@ func setup_ui() -> void:
 	hearts_label.add_theme_constant_override("outline_size", 8)
 	layer.add_child(hearts_label)
 	banner_label = Label.new()
-	banner_label.set_anchors_and_offsets_preset(Control.PRESET_CENTER_TOP)
-	banner_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
-	banner_label.position.y = 70
+	banner_label.set_anchors_and_offsets_preset(Control.PRESET_TOP_WIDE)
+	banner_label.offset_left = 140
+	banner_label.offset_right = -140
+	banner_label.offset_top = 112  # under the Infinity Stones row
+	banner_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	banner_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	banner_label.add_theme_font_size_override("font_size", 38)
+	banner_label.add_theme_font_size_override("font_size", 34)
 	banner_label.add_theme_color_override("font_color", Color("ffe066"))
 	banner_label.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
 	banner_label.add_theme_constant_override("outline_size", 12)
@@ -1900,7 +1981,8 @@ func refresh_ui() -> void:
 		(b as Button).visible = not play_mode
 	for sep in (char_button.get_parent() as Node).find_children("*", "VSeparator", false, false):
 		(sep as Control).visible = not play_mode
-	char_button.icon = load("res://assets/portraits/%s.png" % player.character)
+	var portrait := "res://assets/portraits/hero_%s.png" % player.character
+	char_button.icon = load(portrait) if ResourceLoader.exists(portrait) else null
 	style_button(char_button, Color("3a4a63"), false)
 	play_button.text = "Tab\nBuild!" if play_mode else "Tab\nPlay!"
 	items_button.visible = true
@@ -1964,8 +2046,9 @@ func refresh_help() -> void:
 			[["W", "A", "S", "D"], "Walk"], [["Space"], "Jump"],
 			[["Mouse"], "Right-drag to look around"], [["Q", "E"], "Spin the camera"],
 			[["Scroll"], "Zoom"], [["Enter"], "Drive the buggy (walk up to it)"],
-			[["1", "-", "8"], "Pick a weapon"], [["F"], "Fight!"], [["I"], "Get a vehicle"],
-			[["Tab"], "Back to building"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
+			[["1"], "Your hero's power"], [["2", "-", "8"], "Pick a weapon"], [["9"], "Infinity Gauntlet"],
+			[["T"], "Next Infinity Stone"], [["F"], "Fight! / use the stone"], [["I"], "Get a vehicle"],
+			[["Tab"], "Build here"], [["P"], "Pick your hero"], [["H"], "Hide this help"],
 		]
 	else:
 		rows = [
@@ -1975,7 +2058,7 @@ func refresh_help() -> void:
 			[["Right-click"], "Remove a tile"], [["1", "2", "3", "4", "5"], "Pick a shape"],
 			[["C"], "Change colour"], [["Z"], "Undo"],
 			[["I"], "Add things (like our couch!)"], [["K"], "SMASH it!"],
-			[["Tab"], "Go exploring!"], [["P"], "Pick your explorer"], [["H"], "Hide this help"],
+			[["Tab"], "Go exploring!"], [["P"], "Pick your hero"], [["H"], "Hide this help"],
 		]
 	for r in rows:
 		var keys := HBoxContainer.new()
@@ -2056,24 +2139,28 @@ func build_picker(layer: CanvasLayer) -> void:
 	title.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
 	title.add_theme_constant_override("outline_size", 10)
 	col.add_child(title)
-	var row := HBoxContainer.new()
-	row.add_theme_constant_override("separation", 22)
+	var row := GridContainer.new()
+	row.columns = PICKER_COLS
+	row.add_theme_constant_override("h_separation", 14)
+	row.add_theme_constant_override("v_separation", 14)
 	col.add_child(row)
 	for c in CHARACTERS:
 		var b := Button.new()
 		b.focus_mode = Control.FOCUS_NONE
-		b.custom_minimum_size = Vector2(240, 300)
-		b.icon = load("res://assets/portraits/%s.png" % c)
+		b.custom_minimum_size = Vector2(170, 196)
+		var portrait := "res://assets/portraits/hero_%s.png" % c
+		if ResourceLoader.exists(portrait):
+			b.icon = load(portrait)
 		b.expand_icon = true
 		b.icon_alignment = HORIZONTAL_ALIGNMENT_CENTER
 		b.vertical_icon_alignment = VERTICAL_ALIGNMENT_TOP
-		b.text = "%d  %s" % [CHARACTERS.find(c) + 1, CHARACTER_NAMES[c]]
-		b.add_theme_font_size_override("font_size", 30)
+		b.text = CHARACTER_NAMES[c]
+		b.add_theme_font_size_override("font_size", 19)
 		b.set_meta("character", c)
 		b.pressed.connect(pick_character.bind(c))
 		row.add_child(b)
 	var how := Label.new()
-	how.text = "Press 1, 2, 3 or 4  -  or use the arrow keys and Enter"
+	how.text = "Click a hero  -  or use the arrow keys and Enter"
 	how.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	how.add_theme_font_size_override("font_size", 22)
 	how.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.5))
@@ -2101,8 +2188,12 @@ func show_picker(on: bool) -> void:
 
 func picker_key(key: int) -> void:
 	match key:
-		KEY_1, KEY_2, KEY_3, KEY_4:
-			pick_character(CHARACTERS[key - KEY_1])
+		KEY_UP, KEY_W:
+			picker_sel = (picker_sel + CHARACTERS.size() - PICKER_COLS) % CHARACTERS.size()
+			show_picker(true)
+		KEY_DOWN, KEY_S:
+			picker_sel = mini(picker_sel + PICKER_COLS, CHARACTERS.size() - 1) if picker_sel + PICKER_COLS < CHARACTERS.size() else picker_sel % PICKER_COLS
+			show_picker(true)
 		KEY_LEFT, KEY_A:
 			picker_sel = (picker_sel + CHARACTERS.size() - 1) % CHARACTERS.size()
 			show_picker(true)
@@ -2200,7 +2291,15 @@ func save_world() -> void:
 		things.append({"i": it.item, "x": xf_to_arr(it.xform)})
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify({"seed": city_seed, "tiles": arr, "items": things}))
+		f.store_string(JSON.stringify({"seed": city_seed, "tiles": arr, "items": things, "stones": stones.save_state()}))
+
+
+func saved_data() -> Dictionary:
+	if FileAccess.file_exists(SAVE_PATH):
+		var data = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
+		if data is Dictionary:
+			return data
+	return {}
 
 
 func saved_seed() -> int:

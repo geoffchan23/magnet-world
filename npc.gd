@@ -15,22 +15,41 @@ const GRAVITY := 14.0
 const MODEL_SCALE := 0.55
 
 # kind -> how it looks and behaves. "stand_in" is used until its model exists.
+# "ranged" ones shoot slow glowing blasts (tiles block them - build cover!).
+# "boss" ones guard an Infinity Stone: they stay near it, have a health bar,
+# and teleport away when beaten instead of poofing.
 const KINDS := {
-	"survivor": {"name": "Survivor", "friendly": true, "hp": 3, "speed": 1.6, "size": 1.0, "stand_in": "kid", "tint": Color("d9c49a")},
-	"mechanic": {"name": "Mechanic", "friendly": true, "hp": 3, "speed": 1.4, "size": 1.15, "stand_in": "kid", "tint": Color("7f9fc9")},
-	"trader": {"name": "Trader", "friendly": true, "hp": 3, "speed": 1.2, "size": 1.1, "stand_in": "fox", "tint": Color("c9a37f")},
-	"dog": {"name": "Dog", "friendly": true, "hp": 3, "speed": 2.6, "size": 0.7, "stand_in": "fox", "tint": Color("b08a5a"), "follows": true},
-	"raider": {"name": "Raider", "friendly": false, "hp": 4, "speed": 2.0, "size": 1.1, "stand_in": "kid", "tint": Color("8a5050"),
-		"damage": 1, "reach": 0.55, "cooldown": 1.1},
-	"mutant_rat": {"name": "Mutant Rat", "friendly": false, "hp": 3, "speed": 2.4, "size": 0.8, "stand_in": "dino", "tint": Color("9a8a8a"),
+	"civilian": {"name": "New Yorker", "friendly": true, "hp": 3, "speed": 1.6, "size": 1.0, "stand_in": "npc_survivor"},
+	"shield_agent": {"name": "S.H.I.E.L.D. Agent", "friendly": true, "hp": 4, "speed": 1.6, "size": 1.05, "stand_in": "npc_mechanic"},
+	"nick_fury": {"name": "Nick Fury", "friendly": true, "hp": 5, "speed": 1.3, "size": 1.1, "stand_in": "npc_trader", "hints": true},
+	"lucky": {"name": "Lucky the Pizza Dog", "friendly": true, "hp": 3, "speed": 2.6, "size": 0.7, "stand_in": "npc_dog", "follows": true},
+	"chitauri": {"name": "Chitauri", "friendly": false, "hp": 4, "speed": 1.9, "size": 1.05, "stand_in": "npc_raider",
+		"damage": 1, "reach": 0.55, "cooldown": 1.1, "ranged": Color("7dffb0")},
+	"outrider": {"name": "Outrider", "friendly": false, "hp": 3, "speed": 2.6, "size": 0.85, "stand_in": "npc_mutant_rat",
 		"damage": 1, "reach": 0.5, "cooldown": 0.9},
-	"slime": {"name": "Slime", "friendly": false, "hp": 2, "speed": 1.3, "size": 0.8, "stand_in": "dino", "tint": Color("7fe07f"),
+	"symbiote": {"name": "Symbiote", "friendly": false, "hp": 2, "speed": 1.3, "size": 0.8, "stand_in": "npc_slime",
 		"damage": 1, "reach": 0.45, "cooldown": 1.2, "hops": true},
-	"scrap_robot": {"name": "Scrap Robot", "friendly": false, "hp": 7, "speed": 1.3, "size": 1.25, "stand_in": "robot", "tint": Color("b07a4a"),
-		"damage": 1, "reach": 0.6, "cooldown": 1.6},
-	"spider_bot": {"name": "Spider Bot", "friendly": false, "hp": 5, "speed": 2.2, "size": 1.0, "stand_in": "robot", "tint": Color("707a88"),
+	"ultron_sentry": {"name": "Ultron Sentry", "friendly": false, "hp": 6, "speed": 1.4, "size": 1.1, "stand_in": "npc_scrap_robot",
+		"damage": 1, "reach": 0.6, "cooldown": 1.5, "ranged": Color("ff4030")},
+	"spider_drone": {"name": "Spider Drone", "friendly": false, "hp": 4, "speed": 2.2, "size": 1.0, "stand_in": "npc_spider_bot",
 		"damage": 1, "reach": 0.55, "cooldown": 1.0},
+	"hydra_agent": {"name": "Hydra Agent", "friendly": false, "hp": 4, "speed": 1.8, "size": 1.0, "stand_in": "npc_raider",
+		"damage": 1, "reach": 0.55, "cooldown": 1.1, "ranged": Color("ff5050")},
+	# The Black Order and Thanos himself.
+	"ebony_maw": {"name": "Ebony Maw", "friendly": false, "hp": 12, "speed": 1.4, "size": 1.15, "stand_in": "npc_trader", "boss": true,
+		"damage": 1, "reach": 0.6, "cooldown": 1.2, "ranged": Color("b070ff")},
+	"proxima_midnight": {"name": "Proxima Midnight", "friendly": false, "hp": 12, "speed": 2.0, "size": 1.15, "stand_in": "npc_raider", "boss": true,
+		"damage": 1, "reach": 0.8, "cooldown": 1.0},
+	"corvus_glaive": {"name": "Corvus Glaive", "friendly": false, "hp": 12, "speed": 2.1, "size": 1.15, "stand_in": "npc_raider", "boss": true,
+		"damage": 1, "reach": 0.85, "cooldown": 1.0},
+	"cull_obsidian": {"name": "Cull Obsidian", "friendly": false, "hp": 16, "speed": 1.5, "size": 1.6, "stand_in": "npc_scrap_robot", "boss": true,
+		"damage": 2, "reach": 1.0, "cooldown": 1.6, "slam": true},
+	"thanos": {"name": "Thanos", "friendly": false, "hp": 30, "speed": 1.6, "size": 2.0, "stand_in": "npc_scrap_robot", "boss": true,
+		"damage": 2, "reach": 1.2, "cooldown": 1.8, "slam": true},
 }
+const HELLO := ["Hi!", "Avengers assemble!", "My hero!", "Watch out for Thanos!", "Find the Infinity Stones!", "Can I have your autograph?"]
+
+signal defeated(npc)
 
 var main: Node3D
 var kind := ""
@@ -46,6 +65,11 @@ var flee_t := 0.0
 var spin := Vector3.ZERO
 var home := Vector3.ZERO
 var bubble: Label3D
+var tag: Label3D  # bosses: name and health bar
+var guard := false  # stays near home (a stone guard)
+var freeze_t := 0.0  # frozen by the Time Stone / stuck in webs
+var charm_t := 0.0  # Mind Stone: fighting for you for a while
+var shoot_t := 0.0
 
 var visual: Node3D
 var model: Node3D
@@ -79,6 +103,7 @@ func setup(k: String, at: Vector3) -> void:
 		path = "res://assets/characters/%s.glb" % info.stand_in
 	model = (load(path) as PackedScene).instantiate()
 	model.scale = Vector3.ONE * MODEL_SCALE * (float(info.size) if stand_in else 1.0)
+	guard = info.get("boss", false)
 	model.rotation.y = PI  # models face +Z; the visual faces -Z
 	visual.add_child(model)
 	for n in model.find_children("*", "Node3D", true, false):
@@ -94,6 +119,17 @@ func setup(k: String, at: Vector3) -> void:
 	bubble.no_depth_test = true
 	bubble.visible = false
 	add_child(bubble)
+	if info.get("boss", false):
+		tag = Label3D.new()
+		tag.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+		tag.font_size = 48
+		tag.pixel_size = 0.004
+		tag.outline_size = 12
+		tag.modulate = Color("ffd0ff")
+		tag.position.y = 1.05 * float(info.size)
+		tag.no_depth_test = true
+		add_child(tag)
+		update_tag()
 	position = at
 	visual.rotation.y = randf() * TAU
 	think_t = randf() * 2.0
@@ -125,6 +161,21 @@ func _physics_process(delta: float) -> void:
 			queue_free()
 		return
 
+	if freeze_t > 0.0:
+		# Frozen in time (or stuck in a web): no moving, no hitting.
+		freeze_t -= delta
+		velocity = Vector3(0, minf(velocity.y, 0.0) - GRAVITY * delta, 0) if not is_on_floor() else Vector3.ZERO
+		move_and_slide()
+		if freeze_t <= 0.0:
+			set_overlay(null)
+		return
+	if charm_t > 0.0:
+		charm_t -= delta
+		if charm_t <= 0.0:
+			friendly = info.friendly
+			say("Huh?", 1.2)
+			set_overlay(null)
+
 	var player: Node3D = main.player_body()
 	var to_player := player.global_position - global_position
 	to_player.y = 0.0
@@ -133,6 +184,14 @@ func _physics_process(delta: float) -> void:
 	attack_t -= delta
 	hurt_t -= delta
 	flee_t -= delta
+	shoot_t -= delta
+	if charm_t > 0.0:
+		# Mind-controlled: go after the nearest baddie instead of you.
+		var foe = main.combat.nearest_enemy(global_position, Vector3.FORWARD, 10.0)
+		if foe and foe != self:
+			to_player = (foe as Node3D).global_position - global_position
+			to_player.y = 0.0
+			dist = to_player.length()
 
 	# Decide what to do.
 	if friendly:
@@ -142,16 +201,30 @@ func _physics_process(delta: float) -> void:
 			state = "follow"
 		else:
 			state = "wander"
-		if dist < 2.2 and state == "wander" and wave_t <= 0.0 and main.on_foot():
-			wave_t = 1.6
-			say(["Hi!", "Hello!", "Nice buggy!", "Watch out for raiders!", "Hey there!"][randi() % 5])
+		if charm_t > 0.0:
+			state = "attack" if dist < float(info.get("reach", 0.5)) + 0.3 else "chase"
+			if dist > 10.0:
+				state = "follow"
+		elif dist < 2.2 and state == "wander" and wave_t <= 0.0 and main.on_foot():
+			wave_t = 2.4 if info.get("hints", false) else 1.6
+			if info.get("hints", false) and main.stones:
+				say(main.stones.hint(global_position), 4.0, Color("ffe066"))
+			else:
+				say(HELLO[randi() % HELLO.size()])
 	elif flee_t > 0.0:
 		state = "flee"  # scared off (sirens, horns)
 	else:
-		if dist < 9.0 and main.on_foot():
+		var sight := 11.0 if guard else 9.0
+		if guard and global_position.distance_to(home) > 10.0:
+			state = "home"  # don't wander away from the stone
+		elif dist < sight and main.on_foot():
 			state = "attack" if dist < float(info.reach) + 0.3 else "chase"
 		elif state != "wander" and dist > 14.0:
 			state = "wander"
+		if info.has("ranged") and state == "chase" and dist < 8.0 and dist > 1.5 and shoot_t <= 0.0 and main.on_foot():
+			shoot_t = randf_range(2.2, 3.4)
+			swing_t = 0.4
+			main.combat.enemy_shot(global_position + Vector3(0, 0.3 * float(info.size), 0), player.global_position + Vector3(0, 0.25, 0), info.ranged)
 
 	var speed: float = info.speed
 	var want := Vector3.ZERO
@@ -173,6 +246,11 @@ func _physics_process(delta: float) -> void:
 		"flee":
 			want = -to_player
 			speed *= 1.5
+		"home":
+			want = home - global_position
+			want.y = 0
+			if want.length() < 1.5:
+				state = "wander"
 		"chase":
 			want = to_player
 		"attack":
@@ -218,9 +296,18 @@ func _physics_process(delta: float) -> void:
 
 
 func _strike() -> void:
-	if state == "dead" or state == "flying" or not is_instance_valid(main):
+	if state == "dead" or state == "flying" or freeze_t > 0.0 or not is_instance_valid(main):
+		return
+	if charm_t > 0.0:
+		var foe = main.combat.nearest_enemy(global_position, Vector3.FORWARD, float(info.get("reach", 0.5)) + 0.6)
+		if foe and foe != self:
+			foe.take_hit(int(info.get("damage", 1)) + 1, ((foe as Node3D).global_position - global_position).normalized() * 3.0)
 		return
 	var player: Node3D = main.player_body()
+	if info.get("slam", false):
+		# Big ones pound the ground: a shockwave you can see.
+		main.combat.sparkles(global_position + visual.global_basis.z * -0.6, Color("c9a0ff"), 24, 1.2)
+		main.shake = maxf(main.shake, 0.4)
 	if global_position.distance_to(player.global_position) < float(info.reach) + 0.45 and main.on_foot():
 		main.hurt_player(int(info.damage), global_position)
 
@@ -229,15 +316,22 @@ func take_hit(damage: int, push: Vector3) -> void:
 	# Hit by one of your weapons.
 	if state == "dead":
 		return
+	if charm_t > 0.0 and damage > 0:
+		return  # it's on your side right now
 	hp -= damage
 	hurt_t = 0.25
 	flash_white()
+	update_tag()
 	if friendly:
 		flee_t = 6.0
 		say(["Hey!", "Ouch!", "Leave me alone!", "Eek!"][randi() % 4], 1.4)
 	else:
 		state = "chase"  # now it's personal
-	if hp <= 0 or push.length() > 4.0:
+	if guard and hp > 0:
+		velocity += push * 0.3  # bosses barely budge
+		if randf() < 0.3:
+			say(["Hmph!", "You'll pay for that!", "Is that all?", "Grrr!"][randi() % 4], 1.2, Color("e0b0ff"))
+	elif hp <= 0 or push.length() > 4.0:
 		knock(push + Vector3(0, 3.0 + push.length() * 0.2, 0), 0)
 	else:
 		velocity += push
@@ -245,6 +339,14 @@ func take_hit(damage: int, push: Vector3) -> void:
 
 func knock(v: Vector3, extra_damage: int) -> void:
 	if state == "dead":
+		return
+	if guard:
+		# Too big to run over: hurts them a bit and shoves them back.
+		hp -= 2 if extra_damage > 0 else 0
+		update_tag()
+		velocity = Vector3(v.x, 0, v.z) * 0.3
+		if hp <= 0:
+			poof()
 		return
 	hp -= extra_damage
 	state = "flying"
@@ -269,9 +371,61 @@ func flash_white() -> void:
 				(mi as MeshInstance3D).material_overlay = null)
 
 
+func update_tag() -> void:
+	if tag == null:
+		return
+	var n := 10
+	var full := clampi(ceili(float(hp) / float(info.hp) * n), 0, n)
+	tag.text = "%s\n%s%s" % [info.name, "■".repeat(full), "□".repeat(n - full)]
+
+
+func set_overlay(col) -> void:
+	for mi in model.find_children("*", "MeshInstance3D", true, false):
+		var over: StandardMaterial3D = null
+		if col != null:
+			over = StandardMaterial3D.new()
+			over.albedo_color = col
+			over.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			over.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		(mi as MeshInstance3D).material_overlay = over
+
+
+func freeze(secs: float, col: Color) -> void:
+	# Time Stone (green) or webbed up (white): stuck where they stand.
+	if state == "dead":
+		return
+	freeze_t = secs
+	set_overlay(Color(col, 0.45))
+
+
+func charm(secs: float) -> void:
+	# Mind Stone: this one's on your side for a while.
+	if state == "dead" or friendly:
+		return
+	if guard:
+		freeze(3.0, Color("ffe066"))  # bosses just get dizzy
+		say("My head...!", 2.0, Color("ffe066"))
+		return
+	charm_t = secs
+	friendly = true
+	set_overlay(Color(1.0, 0.9, 0.3, 0.3))
+	say("I'm with you now!", 2.0, Color("ffe066"))
+
+
 func poof() -> void:
 	state = "dead"
 	collision_layer = 0
+	defeated.emit(self)
+	if guard:
+		# Beaten bosses teleport away in a purple flash - they'll be back another day.
+		say(["Impossible!", "This isn't over!", "Retreat!"][randi() % 3], 1.5, Color("e0b0ff"))
+		main.sparkle_burst(global_position + Vector3(0, 0.5, 0), Color("b070ff"))
+		main.add_stars(10, global_position)
+		var tw := create_tween()
+		tw.tween_interval(0.6)
+		tw.tween_property(visual, "scale", Vector3(0.05, 2.5, 0.05), 0.25)
+		tw.tween_callback(queue_free)
+		return
 	main.sparkle_burst(global_position + Vector3(0, 0.25, 0), Color("fff3a0"))
 	main.play_sfx(main.pop_snd)
 	if not friendly:

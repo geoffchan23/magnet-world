@@ -32,7 +32,7 @@ func _ready() -> void:
 	stick_base.add_child(stick_knob)
 	# Right-hand buttons: [label, key, which modes show it]
 	var defs := [
-		["Jump", KEY_SPACE, ["walk"]], ["Fight!", KEY_F, ["walk"]], ["Hop in", KEY_ENTER, ["walk_near"]],
+		["Jump", KEY_SPACE, ["walk"]], ["Fight!", KEY_F, ["walk"]], ["Stone", KEY_T, ["walk"]], ["Hop in", KEY_ENTER, ["walk_near"]],
 		["Up", KEY_SPACE, ["fly"]], ["Down", KEY_SHIFT, ["fly"]], ["Brake", KEY_SPACE, ["car"]],
 		["Special", KEY_F, ["car", "fly"]], ["Honk", KEY_G, ["car", "fly"]], ["Hop out", KEY_ENTER, ["car", "fly"]],
 		["Tilt +", KEY_F, ["build"]], ["Tilt -", KEY_G, ["build"]], ["Turn", KEY_R, ["build"]],

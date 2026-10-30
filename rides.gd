@@ -36,7 +36,7 @@ static func available(kind: String) -> bool:
 
 static func seat_driver(ride: Node3D, seat: Transform3D, character: String, standing := false) -> Node3D:
 	# A copy of your explorer, sitting in the seat (or standing, on a hoverboard).
-	var d: Node3D = (load("res://assets/characters/%s.glb" % character) as PackedScene).instantiate()
+	var d: Node3D = (load(preload("res://player.gd").model_path(character)) as PackedScene).instantiate()
 	ride.add_child(d)
 	d.transform = seat * Transform3D(Basis().scaled(Vector3.ONE * 0.55), Vector3.ZERO)
 	if standing:

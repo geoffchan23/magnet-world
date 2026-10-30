@@ -40,10 +40,23 @@ var placed := {}  # kit piece name -> Array of Transform3D
 var mats := {}
 var body: StaticBody3D  # one static body holds every building/prop collision box
 var shape_cache := {}
+var clear_blocks: Array = []  # block corners (Vector2) left as empty plazas for stone sites
 
 
-func build(seed_value := 2026) -> void:
+static func block_corners() -> Array:
+	# Corner (x0, z0) of every city block, ring by ring outward (not the lot).
+	var out := []
+	for bx in block_ranges():
+		for bz in block_ranges():
+			if bx[0] < 0 and bx[1] > 0 and bz[0] < 0 and bz[1] > 0:
+				continue
+			out.append(Vector2(bx[0], bz[0]))
+	return out
+
+
+func build(seed_value := 2026, keep_clear: Array = []) -> void:
 	rng.seed = seed_value
+	clear_blocks = keep_clear
 	load_kit()
 	body = StaticBody3D.new()
 	body.collision_layer = GROUND_LAYER
@@ -54,7 +67,10 @@ func build(seed_value := 2026) -> void:
 		for bz in block_ranges():
 			if bx[0] < 0 and bx[1] > 0 and bz[0] < 0 and bz[1] > 0:
 				continue  # that's the lot
-			make_block(bx[0], bz[0])
+			if Vector2(bx[0], bz[0]) in clear_blocks:
+				make_plaza(bx[0], bz[0])
+			else:
+				make_block(bx[0], bz[0])
 	make_roads()
 	make_lot_fence()
 	make_wasteland()
@@ -305,6 +321,18 @@ func make_ground() -> void:
 		var yaw := i * PI / 2
 		var dir := Vector3(sin(yaw), 0, cos(yaw))
 		solid(Vector3(WORLD_EDGE * 2, 20, 1), Transform3D(Basis(Vector3.UP, yaw), dir * WORLD_EDGE))
+
+
+func make_plaza(x0: float, z0: float) -> void:
+	# An empty paved block: an Infinity Stone site gets built here (stones.gd).
+	var slab := MeshInstance3D.new()
+	var box := BoxMesh.new()
+	box.size = Vector3(BLOCK, SLAB, BLOCK)
+	slab.mesh = box
+	slab.material_override = tex_mat("pavement", 0.35)
+	slab.position = Vector3(x0 + BLOCK / 2, SLAB / 2, z0 + BLOCK / 2)
+	add_child(slab)
+	solid(Vector3(BLOCK, SLAB, BLOCK), Transform3D(Basis(), Vector3(x0 + BLOCK / 2, 0, z0 + BLOCK / 2)))
 
 
 func make_block(x0: float, z0: float) -> void:

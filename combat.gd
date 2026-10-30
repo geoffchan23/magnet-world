@@ -1,7 +1,9 @@
 extends Node3D
 ## Weapons, attacks, projectiles and explosions (explore mode).
 ##
-## Number keys pick a weapon; F (or a left click) attacks. Melee weapons hit
+## Number keys pick a weapon; F (or a left click) attacks. Slot 1 is your
+## hero's own move (Spidey's webs, Cap's shield, Thor's hammer...), slot 9 is
+## the Infinity Gauntlet (powers.gd). Melee weapons hit
 ## whatever is in front of you; ranged ones auto-aim at the nearest baddie in
 ## front so it's easy for small hands. Rockets explode: they knock everything
 ## around flying and will even smash your build.
@@ -16,10 +18,31 @@ const WEAPONS := {
 	"blaster": {"name": "Blaster", "melee": false, "damage": 1, "cooldown": 0.22, "speed": 26.0, "shot": "bolt"},
 	"bow": {"name": "Bow & Arrow", "melee": false, "damage": 2, "cooldown": 0.6, "speed": 20.0, "shot": "arrow", "drop": 6.0},
 	"rocket": {"name": "Rocket Launcher", "melee": false, "damage": 4, "cooldown": 1.2, "speed": 14.0, "shot": "rocket", "boom": 2.6},
+	"gauntlet": {"name": "Infinity Gauntlet", "melee": false, "gauntlet": true, "cooldown": 0.8},
 }
-const ORDER := ["fists", "sword", "knife", "bat", "hammer", "blaster", "bow", "rocket"]
-# Model names inside assets/weapons/weapons.glb.
-const MESH := {"sword": "Sword", "knife": "Knife", "bat": "Bat", "hammer": "Hammer", "blaster": "Blaster", "bow": "Bow", "rocket": "RocketLauncher"}
+const ORDER := ["fists", "sword", "knife", "bat", "hammer", "blaster", "bow", "rocket", "gauntlet"]
+# Model names inside assets/weapons/weapons.glb and gear.glb.
+const MESH := {"sword": "Sword", "knife": "Knife", "bat": "Bat", "hammer": "Hammer", "blaster": "Blaster", "bow": "Bow", "rocket": "RocketLauncher", "gauntlet": "Gauntlet"}
+# Each hero's own move, in slot 1 instead of fists.
+const HERO_MOVES := {
+	"spider_man": {"name": "Web Shooter", "melee": false, "damage": 1, "cooldown": 0.35, "speed": 20.0, "shot": "web", "color": Color("ffffff"), "stun": 2.5},
+	"iron_man": {"name": "Repulsor Blast", "melee": false, "damage": 2, "cooldown": 0.4, "speed": 28.0, "shot": "bolt", "color": Color("ffe2b0")},
+	"captain_america": {"name": "Shield Throw", "melee": false, "damage": 2, "cooldown": 0.9, "speed": 13.0, "shot": "boomerang", "model": "CapShield", "color": Color("9fc8ff")},
+	"thor": {"name": "Mjolnir Throw", "melee": false, "damage": 3, "cooldown": 1.0, "speed": 13.0, "shot": "boomerang", "model": "Mjolnir", "color": Color("a0d8ff"), "zap": true},
+	"hulk": {"name": "Hulk Smash", "melee": true, "damage": 4, "reach": 1.1, "arc": 3.2, "cooldown": 0.8, "push": 10.0, "slam": true, "color": Color("9fe070")},
+	"black_widow": {"name": "Widow's Bite", "melee": true, "damage": 2, "reach": 0.7, "arc": 1.6, "cooldown": 0.35, "push": 3.0, "color": Color("7fd0ff"), "stun": 1.5},
+	"hawkeye": {"name": "Trick Arrow", "melee": false, "damage": 2, "cooldown": 0.6, "speed": 20.0, "shot": "arrow", "drop": 6.0, "boom": 1.3},
+	"black_panther": {"name": "Vibranium Claws", "melee": true, "damage": 2, "reach": 0.75, "arc": 2.2, "cooldown": 0.3, "push": 3.0, "color": Color("c090ff")},
+	"doctor_strange": {"name": "Mystic Bolt", "melee": false, "damage": 2, "cooldown": 0.45, "speed": 18.0, "shot": "bolt", "color": Color("ffa040")},
+	"captain_marvel": {"name": "Photon Blast", "melee": false, "damage": 3, "cooldown": 0.5, "speed": 26.0, "shot": "bolt", "color": Color("ffd060")},
+	"scarlet_witch": {"name": "Hex Bolt", "melee": false, "damage": 2, "cooldown": 0.4, "speed": 16.0, "shot": "bolt", "color": Color("ff3050")},
+	"vision": {"name": "Mind Beam", "melee": false, "damage": 2, "cooldown": 0.4, "speed": 30.0, "shot": "bolt", "color": Color("ffe040")},
+	"ant_man": {"name": "Giant Punch", "melee": true, "damage": 3, "reach": 0.8, "arc": 1.6, "cooldown": 0.5, "push": 9.0, "color": Color("ff6060")},
+	"wasp": {"name": "Wasp Sting", "melee": false, "damage": 1, "cooldown": 0.18, "speed": 24.0, "shot": "bolt", "color": Color("ffe060")},
+	"falcon": {"name": "Redwing Blaster", "melee": false, "damage": 1, "cooldown": 0.25, "speed": 24.0, "shot": "bolt", "color": Color("ff5040")},
+	"war_machine": {"name": "Mini-Gun", "melee": false, "damage": 1, "cooldown": 0.12, "speed": 30.0, "shot": "bolt", "color": Color("ffe0a0")},
+	"winter_soldier": {"name": "Metal Arm Punch", "melee": true, "damage": 3, "reach": 0.7, "arc": 1.4, "cooldown": 0.45, "push": 8.0, "color": Color("d0e0ff")},
+}
 
 var main: Node3D
 var current := "fists"
@@ -27,17 +50,25 @@ var cooldown := 0.0
 var held: Node3D  # the weapon model in the explorer's hand
 var kit := {}  # mesh name -> Node3D template
 var shots: Array = []  # {node, vel, kind, damage, life, drop}
+var foe_shots: Array = []  # baddies' blasts: {node, vel, life}
 var sparkle_mat: StandardMaterial3D
 
 
 func _ready() -> void:
-	var path := "res://assets/weapons/weapons.glb"
-	if ResourceLoader.exists(path):
-		var scene: Node3D = (load(path) as PackedScene).instantiate()
-		for n in scene.get_children():
-			kit[(n as Node).name] = n
-		add_child(scene)
-		scene.visible = false
+	for path in ["res://assets/weapons/weapons.glb", "res://assets/weapons/gear.glb"]:
+		if ResourceLoader.exists(path):
+			var scene: Node3D = (load(path) as PackedScene).instantiate()
+			for n in scene.get_children():
+				kit[(n as Node).name] = n
+			add_child(scene)
+			scene.visible = false
+
+
+func weapon_info(w: String) -> Dictionary:
+	# Slot 1 is whatever your hero does best.
+	if w == "fists":
+		return HERO_MOVES.get(main.player.character, WEAPONS.fists)
+	return WEAPONS[w]
 
 
 func model_of(name: String) -> Node3D:
@@ -83,14 +114,20 @@ func equip(w: String) -> void:
 	hand.add_child(held)
 	# The hand node lives inside the 0.55-scaled toy model; weapons are modelled at world size.
 	held.scale = Vector3.ONE / main.player.MODEL_SCALE
+	if w == "gauntlet" and main.powers:
+		main.powers.show_stones(held)
 	main.play_sfx(main.click_snd)
 
 
 func attack() -> void:
 	if cooldown > 0.0 or main.busy:
 		return
-	var w: Dictionary = WEAPONS[current]
+	var w: Dictionary = weapon_info(current)
 	cooldown = w.cooldown
+	if w.get("gauntlet", false):
+		main.player.swing(0.4, current)
+		main.powers.use()
+		return
 	var p: CharacterBody3D = main.player
 	var fwd: Vector3 = p.facing()
 	var target = nearest_enemy(p.global_position, fwd, 16.0 if not w.melee else 2.2)
@@ -118,6 +155,10 @@ func melee_hit(w: Dictionary, fwd: Vector3) -> void:
 		d.y = 0
 		if d.length() < float(w.reach) + 0.25 and (d.length() < 0.25 or fwd.angle_to(d.normalized()) < float(w.arc) / 2):
 			npc.take_hit(int(w.damage), fwd * float(w.push) + Vector3(0, 1.0, 0))
+			if w.has("stun") and npc.state != "dead":
+				npc.freeze(float(w.stun), Color("bfe8ff"))
+			if w.has("color"):
+				sparkles(npc.global_position + Vector3(0, 0.3, 0), w.color, 14, 0.6)
 			hit_any = true
 	# Melee also bonks the loose junk around.
 	for b in props_near(p + fwd * 0.5, float(w.reach)):
@@ -125,7 +166,7 @@ func melee_hit(w: Dictionary, fwd: Vector3) -> void:
 		hit_any = true
 	if w.get("slam", false):
 		main.shake = 0.5
-		sparkles(p + fwd * 0.7, Color("ffe7a0"), 18)
+		sparkles(p + fwd * 0.7, w.get("color", Color("ffe7a0")), 18)
 	if hit_any:
 		main.play_sfx(main.thud_snd)
 
@@ -141,16 +182,28 @@ func launch(w: Dictionary, fwd: Vector3, target) -> void:
 		vel = (aim - from) / t + Vector3(0, 0.5 * float(w.get("drop", 0.0)) * t, 0)
 	var node: Node3D
 	match w.shot:
-		"bolt":
+		"boomerang":
+			node = Node3D.new()
+			var m := model_of(w.model)
+			node.add_child(m)
+			m.name = "Spin"
+			add_child(node)
+			node.global_position = from
+			var out := (target as Node3D).global_position + Vector3(0, 0.25, 0) if target else from + fwd * 7.0
+			shots.append({"node": node, "w": w, "life": 4.0, "boomerang": true, "out": out, "back": false, "hit": []})
+			main.play_sfx(main.click_snd)
+			return
+		"bolt", "web":
 			node = MeshInstance3D.new()
 			var cap := CapsuleMesh.new()
 			cap.radius = 0.035
 			cap.height = 0.28
 			var m := StandardMaterial3D.new()
 			m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-			m.albedo_color = Color("7ff0ff")
+			var col: Color = w.get("color", Color("7ff0ff"))
+			m.albedo_color = col.lightened(0.4)
 			m.emission_enabled = true
-			m.emission = Color("40e0ff")
+			m.emission = col
 			m.emission_energy_multiplier = 4.0
 			cap.material = m
 			(node as MeshInstance3D).mesh = cap
@@ -176,6 +229,9 @@ func _physics_process(delta: float) -> void:
 		var node: Node3D = s.node
 		var w: Dictionary = s.w
 		s.life -= delta
+		if s.get("boomerang", false):
+			fly_boomerang(s, delta)
+			continue
 		s.vel += Vector3(0, -float(w.get("drop", 0.0)), 0) * delta
 		var from := node.global_position
 		var to: Vector3 = from + s.vel * delta
@@ -193,9 +249,11 @@ func _physics_process(delta: float) -> void:
 				var c: Object = hit.get("collider")
 				if c and c.is_in_group("npc"):
 					c.take_hit(int(w.damage), (s.vel as Vector3).normalized() * 2.0)
+					if w.has("stun") and c.state != "dead":
+						c.freeze(float(w.stun), Color("ffffff"))  # webbed up!
 				elif c is RigidBody3D:
 					(c as RigidBody3D).apply_central_impulse((s.vel as Vector3).normalized() * 1.5)
-				sparkles(at, Color("7ff0ff") if w.shot == "bolt" else Color("ffe7a0"), 6, 0.4)
+				sparkles(at, w.get("color", Color("7ff0ff")) if w.shot != "arrow" else Color("ffe7a0"), 6, 0.4)
 				if w.shot == "arrow" and c and not c.is_in_group("npc"):
 					node.global_position = at  # it sticks, then fades away
 					get_tree().create_timer(4.0).timeout.connect(node.queue_free)
@@ -204,6 +262,94 @@ func _physics_process(delta: float) -> void:
 			continue
 		node.global_position = to
 		node.look_at(to + s.vel, Vector3.UP, true)
+	fly_foe_shots(delta)
+
+
+func fly_boomerang(s: Dictionary, delta: float) -> void:
+	# Cap's shield and Mjolnir: fly out, bonk everything on the way, come back to your hand.
+	var node: Node3D = s.node
+	var w: Dictionary = s.w
+	var home: Vector3 = main.player.global_position + Vector3(0, 0.3, 0)
+	var goal: Vector3 = home if s.back else s.out
+	var step := float(w.speed) * delta * (1.3 if s.back else 1.0)
+	var to_goal := goal - node.global_position
+	if to_goal.length() <= step or s.life <= 0.0:
+		if s.back or s.life <= 0.0:
+			shots.erase(s)
+			node.queue_free()
+			return
+		s.back = true
+	else:
+		node.global_position += to_goal.normalized() * step
+	(node.get_node("Spin") as Node3D).rotate_y(delta * 22.0)
+	for n in get_tree().get_nodes_in_group("npc"):
+		if n in s.hit or n.friendly or n.state == "dead":
+			continue
+		if (n as Node3D).global_position.distance_to(node.global_position - Vector3(0, 0.25, 0)) < 0.5:
+			s.hit.append(n)
+			n.take_hit(int(w.damage), to_goal.normalized() * 3.0 + Vector3(0, 1.0, 0))
+			sparkles(node.global_position, w.color, 16, 0.6)
+			if w.get("zap", false):
+				zap(node.global_position)
+			main.play_sfx(main.thud_snd)
+			s.back = true
+
+
+func zap(at: Vector3) -> void:
+	# A crack of Thor's lightning.
+	sparkles(at + Vector3(0, 1.2, 0), Color("cfe8ff"), 30, 1.4)
+	var flash := OmniLight3D.new()
+	flash.light_color = Color("a8d0ff")
+	flash.light_energy = 6.0
+	flash.omni_range = 5.0
+	add_child(flash)
+	flash.global_position = at + Vector3(0, 1.0, 0)
+	create_tween().tween_property(flash, "light_energy", 0.0, 0.3).finished.connect(flash.queue_free)
+
+
+func enemy_shot(from: Vector3, at: Vector3, col: Color) -> void:
+	# A slow glowing blast from a baddie or a turret: dodge it, or hide behind your tiles.
+	var mi := MeshInstance3D.new()
+	var sm := SphereMesh.new()
+	sm.radius = 0.07
+	sm.height = 0.14
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.albedo_color = col.lightened(0.5)
+	m.emission_enabled = true
+	m.emission = col
+	m.emission_energy_multiplier = 3.0
+	sm.material = m
+	mi.mesh = sm
+	add_child(mi)
+	mi.global_position = from
+	var light := OmniLight3D.new()
+	light.light_color = col
+	light.light_energy = 1.2
+	light.omni_range = 1.2
+	mi.add_child(light)
+	foe_shots.append({"node": mi, "vel": (at - from).normalized() * 7.0, "life": 2.5, "col": col})
+
+
+func fly_foe_shots(delta: float) -> void:
+	var space := get_world_3d().direct_space_state
+	for s in foe_shots.duplicate():
+		var node: Node3D = s.node
+		s.life -= delta
+		var from := node.global_position
+		var to: Vector3 = from + s.vel * delta
+		var q := PhysicsRayQueryParameters3D.create(from, to, 1 | 2 | 4)
+		var hit := space.intersect_ray(q)
+		var pd: Vector3 = main.player.global_position + Vector3(0, 0.25, 0) - to
+		if pd.length() < 0.3 and main.on_foot():
+			main.hurt_player(1, from)
+			hit = {"position": to}
+		if not hit.is_empty() or s.life <= 0.0:
+			sparkles(hit.get("position", to), s.col, 10, 0.4)
+			foe_shots.erase(s)
+			node.queue_free()
+			continue
+		node.global_position = to
 
 
 func explode(at: Vector3, radius: float, damage: int) -> void:
@@ -240,7 +386,7 @@ func nearest_enemy(from: Vector3, fwd: Vector3, reach: float):
 	var best = null
 	var best_d := INF
 	for n in get_tree().get_nodes_in_group("npc"):
-		if n.friendly or n.state == "dead":
+		if n.friendly or n.state == "dead" or (n as Node3D).global_position.distance_to(from) < 0.05:
 			continue
 		var d := (n as Node3D).global_position - from
 		d.y = 0

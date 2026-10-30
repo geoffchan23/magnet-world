@@ -1,8 +1,9 @@
 extends Node3D
-## Keeps the city alive while you explore: people and creatures out on the
-## streets near you, plus a random scenario every so often (a raider ambush, a
-## survivor who needs rescuing, a rat nest, a burning car for the fire truck, a
-## supply drop...). Things far behind you are cleared away again.
+## Keeps the city alive while you explore: New Yorkers, S.H.I.E.L.D. agents and
+## Thanos's invaders out on the streets near you, plus a random scenario every
+## so often (a Chitauri ambush, someone who needs rescuing, an Outrider pack, a
+## burning car for the fire truck, a S.H.I.E.L.D. supply drop...). Things far
+## behind you are cleared away again.
 
 const Rides := preload("res://rides.gd")
 const NPC := preload("res://npc.gd")
@@ -12,7 +13,7 @@ const FAR := 34.0  # ...and no further than this
 const GONE := 60.0  # clear things up past this distance
 const LOT := 16.0  # never inside the building lot
 
-const STREET_LIFE := ["survivor", "survivor", "mechanic", "trader", "dog", "mutant_rat", "mutant_rat", "slime", "raider", "spider_bot"]
+const STREET_LIFE := ["civilian", "civilian", "civilian", "shield_agent", "nick_fury", "lucky", "outrider", "outrider", "symbiote", "chitauri", "hydra_agent", "spider_drone", "ultron_sentry"]
 
 var main: Node3D
 var rng := RandomNumberGenerator.new()
@@ -91,7 +92,7 @@ func start_scenario(force := "") -> void:
 	if at == null:
 		next_scenario = 5.0
 		return
-	var kinds := ["ambush", "rescue", "nest", "robots", "slimes", "supply"]
+	var kinds := ["ambush", "rescue", "nest", "robots", "slimes", "supply", "hydra"]
 	if main.driving:
 		kinds.append("fire")
 		kinds.append("fire")
@@ -99,31 +100,35 @@ func start_scenario(force := "") -> void:
 	scenario = {"kind": kind, "at": at, "foes": []}
 	match kind:
 		"ambush":
-			main.banner("Raider ambush! Look out!")
+			main.banner("Chitauri ambush! Avengers, assemble!")
 			for i in 3:
-				scenario.foes.append(spawn("raider", at + jitter(1.5)))
+				scenario.foes.append(spawn("chitauri", at + jitter(1.5)))
 		"rescue":
-			main.banner("A survivor is surrounded - help them!")
-			scenario.friend = spawn(["survivor", "mechanic", "trader"][rng.randi_range(0, 2)], at)
+			main.banner("Someone's in trouble - help them!")
+			scenario.friend = spawn(["civilian", "shield_agent", "civilian"][rng.randi_range(0, 2)], at)
 			scenario.friend.set_meta("scenario", true)
 			for i in 3:
 				var a := TAU * i / 3.0
-				scenario.foes.append(spawn(["scrap_robot", "mutant_rat", "raider"][rng.randi_range(0, 2)], at + Vector3(cos(a), 0, sin(a)) * 1.6))
+				scenario.foes.append(spawn(["ultron_sentry", "outrider", "chitauri"][rng.randi_range(0, 2)], at + Vector3(cos(a), 0, sin(a)) * 1.6))
 		"nest":
-			main.banner("You found a mutant rat nest!")
+			main.banner("An Outrider pack! Here they come!")
 			for i in 5:
-				scenario.foes.append(spawn("mutant_rat", at + jitter(2.0)))
+				scenario.foes.append(spawn("outrider", at + jitter(2.0)))
 		"robots":
-			main.banner("Scrap robots on patrol!")
-			scenario.foes.append(spawn("scrap_robot", at))
-			scenario.foes.append(spawn("spider_bot", at + jitter(1.5)))
-			scenario.foes.append(spawn("spider_bot", at + jitter(1.5)))
+			main.banner("Ultron's robots are on patrol!")
+			scenario.foes.append(spawn("ultron_sentry", at))
+			scenario.foes.append(spawn("spider_drone", at + jitter(1.5)))
+			scenario.foes.append(spawn("spider_drone", at + jitter(1.5)))
 		"slimes":
-			main.banner("Slime party! Boing boing!")
+			main.banner("Symbiotes! Boing boing!")
 			for i in 6:
-				scenario.foes.append(spawn("slime", at + jitter(2.0)))
+				scenario.foes.append(spawn("symbiote", at + jitter(2.0)))
+		"hydra":
+			main.banner("Hydra agents are up to no good!")
+			for i in 3:
+				scenario.foes.append(spawn("hydra_agent", at + jitter(1.8)))
 		"supply":
-			main.banner("A supply drop is coming down! Go grab it!")
+			main.banner("A S.H.I.E.L.D. supply drop is coming down! Go grab it!")
 			drop_crate(at)
 		"fire":
 			main.banner("A car is on fire! Get the fire truck (Items) and spray it with F!")
