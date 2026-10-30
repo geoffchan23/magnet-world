@@ -9,6 +9,23 @@ extends Node3D
 ##
 ## All copies of one kit piece are drawn as a single MultiMesh, so the whole city
 ## costs a few dozen draw calls (it has to run on an iPad).
+##
+## Enterable buildings: about a third of the towers (more on the inner rings) are
+## built from the hollow pieces in assets/city/interiors.glb (art/src/interiors_kit.py):
+## an open shop door on the street side, a furnished room on every storey (shops,
+## toy shop, office lobby, flats, offices, wrecked rooms), a stair up through each
+## storey and, when the roof is intact, out of a bulkhead onto the roof. Their
+## collision is separate wall / floor / stair / furniture boxes from interiors.json.
+## Lamps glow (unshaded); a couple of warm OmniLights follow the player indoors.
+##
+## API for main.gd:
+##   indoors_at(p: Vector3) -> bool      true when p is inside an enterable building
+##                                       (any storey, or the roof bulkhead).
+##   ceiling_above(p: Vector3) -> float  world height of the ceiling over p, or INF
+##                                       when p is not indoors. Under the stairwell
+##                                       it is the ceiling of the storey above.
+##   doors: Array of {pos: Vector3 (on the pavement just outside), out: Vector3}
+##   enterable: Array of building records (see tower_in()).
 
 const LOT_HALF := 15.0  # the building lot in the middle: -15..15 on both axes
 const ROAD := 5.0
@@ -42,6 +59,22 @@ var body: StaticBody3D  # one static body holds every building/prop collision bo
 var shape_cache := {}
 var clear_blocks: Array = []  # block corners (Vector2) left as empty plazas for stone sites
 
+const GROUND_IN := {"Brick": "Brick_ShopIn", "Conc": "Conc_ShopIn", "Office": "Office_LobbyIn"}
+const GROUND_ROOMS := {"Brick": ["Room_Grocery", "Room_Toys"], "Conc": ["Room_Toys", "Room_Grocery"], "Office": ["Room_Lobby"]}
+const UPPER_ROOMS := {"Brick": ["Room_Living", "Room_Bedroom"], "Conc": ["Room_Bedroom", "Room_Living"], "Office": ["Room_Office", "Room_Meeting"]}
+const MAX_ENTER_FLOORS := 6  # taller towers stay solid
+const ROOF_HUT := 0.92  # height of the stair bulkhead's ceiling over the roof slab
+const ROOM_CHUNK := 25.0  # furniture MultiMeshes are split into cells this big...
+const ROOM_SEEN := 40.0  # ...and each is drawn only within this distance
+var rng_in := RandomNumberGenerator.new()  # interior choices, so the street layout is unchanged
+var in_data := {}  # interiors.json
+var enterable: Array = []  # {at, yaw, storeys, roof, rooms, door}
+var doors: Array = []
+var in_grid := {}  # Vector2i cell -> Array of indices into enterable
+var lights: Array = []  # OmniLight3D pool that follows the player indoors
+var light_t := 0.0
+var ring_stats := [[0, 0], [0, 0], [0, 0]]  # per ring: [towers, enterable] (for --doors)
+
 
 static func block_corners() -> Array:
 	# Corner (x0, z0) of every city block, ring by ring outward (not the lot).
@@ -55,7 +88,9 @@ static func block_corners() -> Array:
 
 
 func build(seed_value := 2026, keep_clear: Array = []) -> void:
+	var t0 := Time.get_ticks_msec()
 	rng.seed = seed_value
+	rng_in.seed = seed_value * 31 + 7
 	clear_blocks = keep_clear
 	load_kit()
 	body = StaticBody3D.new()
@@ -75,19 +110,55 @@ func build(seed_value := 2026, keep_clear: Array = []) -> void:
 	make_lot_fence()
 	make_wasteland()
 	make_skyline()
+	if "--doors" in OS.get_cmdline_user_args():
+		var tris := 0
+		var all_tris := 0
+		for n in placed:
+			var t := 0
+			var pm: Mesh = pieces[n.get_slice("@", 0)]
+			for i in pm.get_surface_count():
+				t += pm.surface_get_array_index_len(i) / 3
+			all_tris += t * placed[n].size()
+			if n.begins_with("Room_") or n.ends_with("In") or n.begins_with("In_"):
+				tris += t * placed[n].size()
+				print("piece ", n, " x", placed[n].size(), " = ", t * placed[n].size(), " tris")
+		print("interior tris %d of %d city tris" % [tris, all_tris])
 	flush()
+	for i in 2:
+		var l := OmniLight3D.new()
+		l.light_color = Color(1.0, 0.8, 0.58)
+		l.light_energy = 1.4
+		l.omni_range = 3.2
+		l.omni_attenuation = 1.2
+		l.visible = false
+		add_child(l)
+		lights.append(l)
+	if "--doors" in OS.get_cmdline_user_args():
+		var sorted := doors.duplicate()
+		sorted.sort_custom(func(a, b): return a.pos.length() < b.pos.length())
+		for d in sorted.filter(func(d): return d.roof).slice(0, 6) + sorted.slice(0, 4):
+			print("door ", d.pos, " out ", d.out, " storeys ", d.storeys, " roof ", d.roof)
+		print("rings [towers, enterable]: ", ring_stats)
+		print("city: %d enterable buildings, %d storeys inside, %d collision shapes, built in %d ms" % [enterable.size(), enterable.reduce(func(a, b): return a + b.storeys, 0), body.get_child_count(), Time.get_ticks_msec() - t0])
 
 
 # ---------------------------------------------------------------- kit
 
 func load_kit() -> void:
-	var path := "res://assets/city/kit.glb"
+	for path in ["res://assets/city/kit.glb", "res://assets/city/interiors.glb"]:
+		load_glb(path, path.ends_with("interiors.glb"))
+	var jp := "res://assets/city/interiors.json"
+	if FileAccess.file_exists(jp):
+		in_data = JSON.parse_string(FileAccess.get_file_as_string(jp))
+
+
+func load_glb(path: String, inside: bool) -> void:
 	if ResourceLoader.exists(path):
 		var scene: Node3D = (load(path) as PackedScene).instantiate()
 		for mi in scene.find_children("*", "MeshInstance3D", true, false):
 			var m := (mi as MeshInstance3D).mesh.duplicate() as ArrayMesh
 			for i in m.get_surface_count():
-				m.surface_set_material(i, kit_mat(m.surface_get_material(i)))
+				m.surface_set_material(i, kit_mat(m.surface_get_material(i), inside))
 			# Keep the piece's own rotation/scale; its origin is its footprint centre.
 			var b := (mi as Node3D).transform.basis
 			if not b.is_equal_approx(Basis()):
@@ -140,9 +211,36 @@ func tex_mat(tex: String, scale: float, tint := Color.WHITE) -> StandardMaterial
 	return m
 
 
-func kit_mat(src: Material) -> Material:
+func kit_mat(src: Material, inside := false) -> Material:
 	# Swap the kit's plain materials for tiling PBR textures, matched by name.
 	var name := src.resource_name if src else ""
+	if name.begins_with("Glow"):
+		# Lamps and screens: lit from inside, colour in the vertex colours.
+		if not mats.has("glow"):
+			var g := StandardMaterial3D.new()
+			g.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+			g.vertex_color_use_as_albedo = true
+			g.disable_fog = true
+			mats["glow"] = g
+		return mats["glow"]
+	if name.begins_with("Furn"):
+		if not mats.has("furn"):
+			var f := StandardMaterial3D.new()
+			f.vertex_color_use_as_albedo = true
+			f.roughness = 0.8
+			mats["furn"] = f
+		return mats["furn"]
+	if inside and name.begins_with("Glass") and src is BaseMaterial3D:
+		# See-through, so you can look out of the windows and peek into lit rooms.
+		if not mats.has("glass_in"):
+			var gl := StandardMaterial3D.new()
+			gl.albedo_color = Color(0.1, 0.13, 0.15, 0.4)
+			gl.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			gl.cull_mode = BaseMaterial3D.CULL_DISABLED
+			gl.roughness = 0.08
+			gl.metallic_specular = 0.7
+			mats["glass_in"] = gl
+		return mats["glass_in"]
 	var base := (src as BaseMaterial3D).albedo_color if src is BaseMaterial3D else Color.WHITE
 	# The kit's base colours are tints for the textures (Trim ones are real colours).
 	if name.begins_with("Concrete"):
@@ -189,6 +287,10 @@ func stand_in(name: String) -> Mesh:
 
 func put(name: String, xf: Transform3D) -> void:
 	piece(name)
+	if name.begins_with("Room_"):
+		# Furnished rooms only matter up close: one MultiMesh per city block, drawn
+		# only near the camera.
+		name = "%s@%d,%d" % [name, floori(xf.origin.x / ROOM_CHUNK), floori(xf.origin.z / ROOM_CHUNK)]
 	if not placed.has(name):
 		placed[name] = []
 	placed[name].append(xf)
@@ -200,13 +302,19 @@ func flush() -> void:
 		var list: Array = placed[name]
 		var mm := MultiMesh.new()
 		mm.transform_format = MultiMesh.TRANSFORM_3D
-		mm.mesh = pieces[name]
+		mm.mesh = pieces[name.get_slice("@", 0)]
 		mm.instance_count = list.size()
 		for i in list.size():
 			mm.set_instance_transform(i, list[i])
 		var mmi := MultiMeshInstance3D.new()
 		mmi.name = name
 		mmi.multimesh = mm
+		if name.begins_with("Room_"):
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			mmi.visibility_range_end = ROOM_SEEN
+			mmi.visibility_range_end_margin = 4.0
+		elif name.begins_with("In_"):
+			mmi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF  # always indoors
 		add_child(mmi)
 	placed.clear()
 
@@ -362,6 +470,16 @@ func make_block(x0: float, z0: float) -> void:
 	var tall := clampf((dist - 30.0) / 50.0, 0.0, 1.0)
 	var k := rng.randi_range(0, 11)
 	var left := 12
+	# Which ring slots get an enterable building: about a third, more near the lot.
+	var ring_i := clampi(roundi((dist - 30.0) / (ROAD + BLOCK)), 0, 2)
+	var want: int = [5, 5, 5][ring_i] + rng_in.randi_range(-1, 1)
+	var order := range(12)
+	for i in range(11, 0, -1):
+		var j := rng_in.randi_range(0, i)
+		var tmp = order[i]
+		order[i] = order[j]
+		order[j] = tmp
+	var chosen := order.slice(0, want)
 	while left > 0:
 		var run := mini(rng.randi_range(1, 3), left)
 		var family: String = FAMILIES[rng.randi_range(0, 2)]
@@ -371,6 +489,7 @@ func make_block(x0: float, z0: float) -> void:
 		var ruined := rng.randf() < 0.6
 		for r in run:
 			var s: Vector2i = ring[(k + r) % 12]
+			var enter: bool = ((k + r) % 12) in chosen
 			var at := Vector3(x0 + inset + SLOT * (s.x + 0.5), SLAB, z0 + inset + SLOT * (s.y + 0.5))
 			# Buildings face the street they're on.
 			var face := 0.0
@@ -385,7 +504,10 @@ func make_block(x0: float, z0: float) -> void:
 			if rng.randf() < 0.1:
 				collapsed(at)
 			else:
-				tower(family, at, face, floors + rng.randi_range(-1, 1), ruined)
+				var n_in := enterable.size()
+				tower(family, at, face, floors + rng.randi_range(-1, 1), ruined, enter)
+				ring_stats[ring_i][0] += 1
+				ring_stats[ring_i][1] += enterable.size() - n_in
 		k += run
 		left -= run
 	yard(Vector3(x0 + BLOCK / 2, SLAB, z0 + BLOCK / 2))
@@ -402,27 +524,212 @@ func make_block(x0: float, z0: float) -> void:
 			prop("Hydrant", Vector3(x0 + BLOCK / 2, SLAB, z0 + BLOCK / 2) + out * (BLOCK / 2 - 0.5) + along * rng.randf_range(-8, 8), rng.randf() * TAU)
 
 
-func tower(family: String, at: Vector3, face: float, floors: int, ruined: bool) -> void:
+func tower(family: String, at: Vector3, face: float, floors: int, ruined: bool, enter := false) -> void:
 	var basis := Basis(Vector3.UP, face)
-	var y := at.y
-	put(GROUND_FLOOR[family], Transform3D(basis, Vector3(at.x, y, at.z)))
-	y += STOREY
-	for f in maxi(floors, 0):
-		var pick := family + ("_Floor2" if rng.randf() < 0.45 else "_Floor")
-		put(pick, Transform3D(basis.rotated(Vector3.UP, PI * rng.randi_range(0, 1)), Vector3(at.x, y, at.z)))
-		y += STOREY
-	solid(Vector3(SLOT, y - at.y, SLOT), Transform3D(basis, at))
+	floors = maxi(floors, 0)
+	# Roll every random choice first, in the same order as always, so a seed keeps its streets.
+	var picks: Array = []
+	for f in floors:
+		picks.append([family + ("_Floor2" if rng.randf() < 0.45 else "_Floor"), rng.randi_range(0, 1)])
+	var ruin := ""
+	var ruin_turn := 0
+	var spill := false
+	var spill_x := 0.0
+	var spill_pick := 0
+	var spill_yaw := 0.0
 	if ruined:
 		var list: Array = RUINS[family]
-		put(list[rng.randi_range(0, list.size() - 1)], Transform3D(basis.rotated(Vector3.UP, PI / 2 * rng.randi_range(0, 3)), Vector3(at.x, y, at.z)))
-		solid(Vector3(SLOT * 0.9, STOREY * 0.6, SLOT * 0.9), Transform3D(basis, Vector3(at.x, y, at.z)))
-		# Chunks of the broken top lie in the street below.
+		ruin = list[rng.randi_range(0, list.size() - 1)]
+		ruin_turn = rng.randi_range(0, 3)
 		if rng.randf() < 0.5:
-			var spill := at + basis * Vector3(rng.randf_range(-1.5, 1.5), 0, 2.6)
-			prop(["Rubble_A", "Rubble_B"][rng.randi_range(0, 1)], spill, rng.randf() * TAU)
+			spill = true
+			spill_x = rng.randf_range(-1.5, 1.5)
+			spill_pick = rng.randi_range(0, 1)
+			spill_yaw = rng.randf() * TAU
+	var top := at.y + STOREY * (floors + 1)
+	if enter and floors <= MAX_ENTER_FLOORS and not in_data.is_empty() and not "--no-interiors" in OS.get_cmdline_user_args():
+		tower_in(family, at, face, floors, ruined)
 	else:
-		put(family + "_Roof", Transform3D(basis, Vector3(at.x, y, at.z)))
-		solid(Vector3(SLOT, 0.3, SLOT), Transform3D(basis, Vector3(at.x, y, at.z)))
+		put(GROUND_FLOOR[family], Transform3D(basis, Vector3(at.x, at.y, at.z)))
+		for f in floors:
+			put(picks[f][0], Transform3D(basis.rotated(Vector3.UP, PI * picks[f][1]), Vector3(at.x, at.y + STOREY * (f + 1), at.z)))
+		solid(Vector3(SLOT, top - at.y, SLOT), Transform3D(basis, at))
+		if not ruined:
+			put(family + "_Roof", Transform3D(basis, Vector3(at.x, top, at.z)))
+			solid(Vector3(SLOT, 0.3, SLOT), Transform3D(basis, Vector3(at.x, top, at.z)))
+	if ruined:
+		put(ruin, Transform3D(basis.rotated(Vector3.UP, PI / 2 * ruin_turn), Vector3(at.x, top, at.z)))
+		solid(Vector3(SLOT * 0.9, STOREY * 0.6, SLOT * 0.9), Transform3D(basis, Vector3(at.x, top, at.z)))
+		# Chunks of the broken top lie in the street below (clear of a shop door).
+		if spill:
+			var sx := spill_x if not enter else -1.5
+			prop(["Rubble_A", "Rubble_B"][spill_pick], at + basis * Vector3(sx, 0, 2.6 if not enter else 2.9), spill_yaw)
+
+
+func tower_in(family: String, at: Vector3, face: float, floors: int, ruined: bool) -> void:
+	# A building you can walk into. Storey k is turned k * 180 degrees so each stair
+	# comes up through the next storey's stairwell hole (see interiors_kit.py).
+	var storeys := floors + 1
+	var rooms: Array = []
+	for k in storeys:
+		var yaw := face + PI * k
+		var xf := Transform3D(Basis(Vector3.UP, yaw), at + Vector3(0, STOREY * k, 0))
+		var room: String
+		if k == 0:
+			put_in(GROUND_IN[family], xf)
+			var g: Array = GROUND_ROOMS[family]
+			room = g[rng_in.randi_range(0, g.size() - 1)]
+		else:
+			put_in(family + "_FloorIn", xf)
+			put_in("In_Slab", xf)
+			var u: Array = UPPER_ROOMS[family]
+			room = "Room_Wreck" if rng_in.randf() < 0.2 else u[rng_in.randi_range(0, u.size() - 1)]
+		put_in(room, xf)
+		rooms.append(room)
+		if k < floors or not ruined:
+			put_in("In_Stair", xf)
+	var top := Transform3D(Basis(Vector3.UP, face + PI * storeys), at + Vector3(0, STOREY * storeys, 0))
+	if not ruined:
+		put_in(family + "_RoofIn", top)
+	var basis := Basis(Vector3.UP, face)
+	var door_x := 0.0 if family == "Office" else 0.67
+	var rec := {"at": at, "yaw": face, "storeys": storeys, "roof": not ruined, "rooms": rooms, "family": family}
+	enterable.append(rec)
+	doors.append({"pos": at + basis * Vector3(door_x, 0, 2.3), "out": basis * Vector3(0, 0, 1), "storeys": storeys, "roof": not ruined})
+	var idx := enterable.size() - 1
+	for dx in [-2.0, 2.0]:
+		for dz in [-2.0, 2.0]:
+			var key := Vector2i(floori((at.x + dx) / 4.0), floori((at.z + dz) / 4.0))
+			if not in_grid.has(key):
+				in_grid[key] = []
+			if not idx in in_grid[key]:
+				in_grid[key].append(idx)
+
+
+func put_in(name: String, xf: Transform3D) -> void:
+	# An interiors piece plus its collision boxes / stair ramps from interiors.json.
+	put(name, xf)
+	var d: Dictionary = in_data.pieces.get(name, {})
+	for b in d.get("boxes", []):
+		var lo := Vector3(b[0], b[1], b[2])
+		var hi := Vector3(b[3], b[4], b[5])
+		var size := hi - lo
+		var key := "%.3f,%.3f,%.3f" % [size.x, size.y, size.z]
+		if not shape_cache.has(key):
+			var bs := BoxShape3D.new()
+			bs.size = size
+			shape_cache[key] = bs
+		var cs := CollisionShape3D.new()
+		cs.shape = shape_cache[key]
+		cs.transform = xf * Transform3D(Basis(), (lo + hi) / 2)
+		body.add_child(cs)
+	var ri := 0
+	for r in d.get("ramps", []):
+		# [x0, x1, y_foot, y_top, z_foot, z_top, z_end]: a wedge under stair treads / a door sill.
+		var key := "ramp:%s:%d" % [name, ri]
+		ri += 1
+		if not shape_cache.has(key):
+			var pts := PackedVector3Array()
+			for x in [r[0], r[1]]:
+				pts.append(Vector3(x, r[2], r[4]))
+				pts.append(Vector3(x, r[3], r[5]))
+				pts.append(Vector3(x, r[3], r[6]))
+				pts.append(Vector3(x, r[2], r[6]))
+			var cps := ConvexPolygonShape3D.new()
+			cps.points = pts
+			shape_cache[key] = cps
+		var cs := CollisionShape3D.new()
+		cs.shape = shape_cache[key]
+		cs.transform = xf
+		body.add_child(cs)
+
+
+# ---------------------------------------------------------------- indoors queries
+
+func building_at(p: Vector3) -> Dictionary:
+	# The enterable building whose footprint holds p (ignoring height), or {}.
+	var key := Vector2i(floori(p.x / 4.0), floori(p.z / 4.0))
+	for i in in_grid.get(key, []):
+		var b: Dictionary = enterable[i]
+		var l: Vector3 = Basis(Vector3.UP, -b.yaw) * (p - b.at)
+		if absf(l.x) < 1.9 and absf(l.z) < 1.9:
+			return b
+	return {}
+
+
+func storey_local(b: Dictionary, p: Vector3, k: int) -> Vector3:
+	var at: Vector3 = b.at
+	return Basis(Vector3.UP, -(b.yaw + PI * k)) * (p - at - Vector3(0, STOREY * k, 0))
+
+
+func in_hole(l: Vector3) -> bool:
+	var h: Array = in_data.layout.hole  # [x0, z0, x1, z1] in a storey's frame
+	return l.x > h[0] - 0.05 and l.x < h[2] + 0.05 and l.z > h[1] - 0.05 and l.z < h[3] + 0.05
+
+
+func indoors_at(p: Vector3) -> bool:
+	return ceiling_above(p) < INF
+
+
+func ceiling_above(p: Vector3) -> float:
+	var b := building_at(p)
+	if b.is_empty():
+		return INF
+	var h: float = p.y - b.at.y
+	var n: int = b.storeys
+	if h < -0.1:
+		return INF
+	if h >= n * STOREY:
+		# On the roof: only the stair bulkhead is indoors.
+		if b.roof and h < n * STOREY + ROOF_HUT and in_hole(storey_local(b, p, n)):
+			return b.at.y + n * STOREY + ROOF_HUT
+		return INF
+	var k := clampi(floori(h / STOREY), 0, n - 1)
+	var ceil_k := k + 1
+	# Under a stairwell hole (k + 1 < n, or the roof's) the ceiling is a storey higher.
+	if ceil_k < n and in_hole(storey_local(b, p, ceil_k)):
+		ceil_k += 1
+	elif ceil_k == n and b.roof and in_hole(storey_local(b, p, ceil_k)):
+		return b.at.y + n * STOREY + ROOF_HUT
+	return b.at.y + ceil_k * STOREY
+
+
+func _process(delta: float) -> void:
+	# Warm light in the room you're in (and the one above, for the stairs).
+	light_t -= delta
+	if light_t > 0.0 or lights.is_empty():
+		return
+	light_t = 0.15
+	if OS.get_cmdline_user_args().has("--stats"):
+		print("stats prims ", RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_PRIMITIVES_IN_FRAME), " draws ", RenderingServer.get_rendering_info(RenderingServer.RENDERING_INFO_TOTAL_DRAW_CALLS_IN_FRAME))
+	var p := Vector3.INF
+	var main := get_parent()
+	var pl = main.get("player") if main else null
+	if pl and (pl as Node3D).visible:
+		p = (pl as Node3D).global_position + Vector3(0, 0.2, 0)
+	elif get_viewport().get_camera_3d():
+		p = get_viewport().get_camera_3d().global_position
+	var b := building_at(p) if p != Vector3.INF else {}
+	var lit := 0
+	if not b.is_empty():
+		var k := clampi(floori((p.y - b.at.y) / STOREY), 0, b.storeys - 1)
+		if p.y - b.at.y > -0.5 and p.y - b.at.y < b.storeys * STOREY:
+			for s in [k, k + 1]:
+				if s < b.storeys and lit < lights.size():
+					var l: OmniLight3D = lights[lit]
+					l.global_position = b.at + Basis(Vector3.UP, b.yaw + PI * s) * lamp_spot(b.rooms[s]) + Vector3(0, STOREY * s, 0)
+					l.visible = true
+					lit += 1
+	for i in range(lit, lights.size()):
+		lights[i].visible = false
+
+
+func lamp_spot(room: String) -> Vector3:
+	var best := Vector3(0, 0.9, 0)
+	for s in in_data.lights.get(room, []):
+		if s[1] > best.y or best == Vector3(0, 0.9, 0):
+			best = Vector3(s[0], minf(s[1], 0.95), s[2])
+	return best
 
 
 func collapsed(at: Vector3) -> void:

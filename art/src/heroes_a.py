@@ -41,13 +41,19 @@ class S:
 
     def __init__(self, center, radii, bumps=(), taper=0.0, jaw=0.0, flat_back=0.0):
         self.c, self.r = Vector(center), Vector(radii)
-        self.bumps = [(Vector(b[0]).normalized(), b[1], b[2]) for b in bumps]
+        self.bumps = [(Vector(b[0]).normalized(), b[1], b[2], Vector(b[3]) if len(b) > 3 else None) for b in bumps]
         self.taper, self.jaw, self.flat_back = taper, jaw, flat_back
 
     def pos(self, d):
         d = Vector(d).normalized()
-        off = sum(h * math.exp(-(d.angle(bd, 0.0) / w) ** 2) for bd, h, w in self.bumps)
-        x, y, z = d.x * self.r.x, d.y * self.r.y, d.z * self.r.z
+        off = 0.0
+        sweep = Vector()
+        for bd, h, w, sw in self.bumps:
+            k = math.exp(-(d.angle(bd, 0.0) / w) ** 2)
+            off += h * k
+            if sw is not None:
+                sweep += sw * k
+        x, y, z = d.x * self.r.x + sweep.x, d.y * self.r.y + sweep.y, d.z * self.r.z + sweep.z
         if self.taper and d.z < 0:  # narrower towards the chin (egg / mask shape)
             k = 1 - self.taper * (-d.z) ** 1.6
             x *= k
@@ -227,7 +233,7 @@ def patch(name, srf, d0, outline, m, thick=0.004, rings=3, sub=3, sink=0.002, be
     return o
 
 
-def shell(name, center, radii, m, planes, inflate=0.006, seg=24, ring=12, hero=False, srf=None):
+def shell(name, center, radii, m, planes, inflate=0.006, seg=24, ring=12, hero=False, srf=None, lip=0.0):
     """A skin-tight layer over an ellipsoid (or an S surface), cut by planes (unit-sphere space, keep
     the side the normal points to) - crisp-edged suit panels, stripes, helmets."""
     seg, ring = _d(seg, FLOOR.get(seg, 12), hero), _d(ring, 6, hero, even=False)
@@ -238,13 +244,75 @@ def shell(name, center, radii, m, planes, inflate=0.006, seg=24, ring=12, hero=F
         geom = bm.verts[:] + bm.edges[:] + bm.faces[:]
         bmesh.ops.bisect_plane(bm, geom=geom, plane_co=co, plane_no=no, clear_inner=True)
     srf = srf or S(center, radii)
+    norms = {}
     for v in bm.verts:
         d = v.co.normalized()
         p, n = srf.at(d)
         v.co = p - srf.c + n * inflate
+        norms[v] = n
+    if lip > 0:  # roll the cut edge inwards so the layer reads as a thick, solid piece
+        edges = [e for e in bm.edges if e.is_boundary]
+        bverts = {v for e in edges for v in e.verts}
+        res = bmesh.ops.extrude_edge_only(bm, edges=edges)
+        newv = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
+        # map each new vert to the boundary vert it was extruded from (same position)
+        old = {tuple(round(c, 7) for c in v.co): v for v in bverts}
+        for v in newv:
+            src = old.get(tuple(round(c, 7) for c in v.co))
+            n = norms.get(src, v.co.normalized())
+            v.co = v.co - n * lip
     bm.to_mesh(me)
     bm.free()
     return toykit._obj(name, me, m, srf.c)
+
+
+def hair_shell(name, c, r, m, bumps, planes, lip=0.012, seg=32, ring=18):
+    """Hair as one clean-edged piece: a bumpy surface cut by planes, cut edge rolled under."""
+    srf = S(c, r, bumps)
+    shell(name, None, None, m, planes, inflate=0.0, srf=srf, seg=seg, ring=ring, lip=lip, hero=True)
+    return srf
+
+
+def lock(name, pts, m, w, center, th=0.55, tip=0.12, seg=7, sub=3, root_cap=True):
+    """A tapered, flattened hair lock along a smooth curve (flat side facing away from `center`)."""
+    seg = max(5, int(round(seg * max(0.7, DETAIL[0]))))
+    P = _cr([Vector(p) for p in pts], max(2, int(round(sub * max(0.6, DETAIL[0])))))
+    n = len(P)
+    c = Vector(center)
+    me = bpy.data.meshes.new(name)
+    bm = bmesh.new()
+    rings = []
+    for i, p in enumerate(P):
+        t = (P[min(i + 1, n - 1)] - P[max(i - 1, 0)]).normalized()
+        out = p - c
+        out = (out - t * out.dot(t)).normalized()
+        sd = t.cross(out).normalized()
+        k = i / (n - 1)
+        r = w * (1 - (1 - tip) * k ** 1.6) * (0.85 + 0.15 * math.sin(math.pi * min(1, k * 2.5)))
+        if i == n - 1:
+            rings.append([bm.verts.new(p + t * w * 0.15)])
+            continue
+        rings.append([bm.verts.new(p + sd * math.cos(2 * math.pi * j / seg) * r + out * math.sin(2 * math.pi * j / seg) * r * th)
+                      for j in range(seg)])
+    for i in range(n - 1):
+        A, B = rings[i], rings[i + 1]
+        for j in range(seg):
+            jj = (j + 1) % seg
+            if len(B) == 1:
+                f = bm.faces.new((A[j], A[jj], B[0]))
+            else:
+                f = bm.faces.new((A[j], A[jj], B[jj], B[j]))
+            f.normal_update()
+            mid = sum((v.co for v in f.verts), Vector()) / len(f.verts)
+            ctr = P[i] if len(B) == 1 else (P[i] + P[i + 1]) / 2
+            _fix(bm, f, mid - ctr)
+    if root_cap:
+        f = bm.faces.new(rings[0])
+        f.normal_update()
+        _fix(bm, f, P[0] - P[1])
+    bm.to_mesh(me)
+    bm.free()
+    return toykit._obj(name, me, m)
 
 
 def offset_outline(O, amt):
@@ -423,7 +491,7 @@ BASE = dict(sx=0.212, sz=0.625, hx=0.082, hz=0.335,
             pelvis_c=(0, 0.008, 0.36), pelvis_r=(0.146, 0.114, 0.07),
             delt=(0.054, 0.053, 0.06), arm_r=0.04, fore_r=0.042, fist=(0.05, 0.052, 0.056),
             thigh_r=0.062, shin_r=0.052, knee_z=0.18, boot_top=0.15,
-            head_c=(0, 0, 0.855), head_r=(0.188, 0.178, 0.188), pecs=0.016, lats=0.014)
+            head_c=(0, 0, 0.855), head_r=(0.188, 0.178, 0.188), pecs=0.016, lats=0.014, chest_taper=0.2)
 
 
 def pecs_bumps(P):
@@ -438,7 +506,7 @@ def figure(M, P=None, gloves=True, boots=True, skip=()):
     P = dict(BASE, **(P or {}))
     g = lambda k, d=None: M.get(k, M.get(d) if d else None) or M["chest"]
     sx, sz, hx, hz = P["sx"], P["sz"], P["hx"], P["hz"]
-    P["C"] = S(P["chest_c"], P["chest_r"], pecs_bumps(P))
+    P["C"] = S(P["chest_c"], P["chest_r"], pecs_bumps(P), taper=P["chest_taper"])
     P["W"] = S(P["waist_c"], P["waist_r"])
     P["Pv"] = S(P["pelvis_c"], P["pelvis_r"])
     with limb("Body"):
@@ -607,26 +675,26 @@ def iron_man():
                     delt=(0.06, 0.058, 0.058)))
     C, W = P["C"], P["W"]
     hc = Vector(P["head_c"])
-    H = S(hc, (0.172, 0.172, 0.196), taper=0.3, jaw=0.05)
+    H = S(hc, (0.162, 0.17, 0.2), taper=0.32, jaw=0.1)
     with limb("Head"):
         neck(P, dark, 0.05)
         H.mesh("Head", red, seg=30, ring=18)
         F = (0, -1, 0)
-        plate = [(0.0, 0.5), (0.22, 0.48), (0.5, 0.42), (0.62, 0.15), (0.6, -0.25), (0.5, -0.5), (0.3, -0.72), (0.0, -0.8),
-                 (-0.3, -0.72), (-0.5, -0.5), (-0.6, -0.25), (-0.62, 0.15), (-0.5, 0.42), (-0.22, 0.48)]
+        plate = [(0.0, 0.52), (0.25, 0.5), (0.58, 0.44), (0.72, 0.18), (0.7, -0.25), (0.58, -0.58), (0.34, -0.85), (0.0, -0.95),
+                 (-0.34, -0.85), (-0.58, -0.58), (-0.7, -0.25), (-0.72, 0.18), (-0.58, 0.44), (-0.25, 0.5)]
         patch("Head_Faceplate", H, F, plate[::-1], gold, thick=0.007, rings=4, sub=3)
-        Hf = S(hc, (0.172 + 0.007, 0.172 + 0.007, 0.196 + 0.007), taper=0.3, jaw=0.05)
+        Hf = S(hc, (0.162 + 0.007, 0.17 + 0.007, 0.2 + 0.007), taper=0.32, jaw=0.1)
         for s, side in sides():
-            slit = [(0.1, 0.13), (0.27, 0.15), (0.44, 0.19), (0.47, 0.13), (0.3, 0.075), (0.13, 0.06)]
+            slit = [(0.09, 0.15), (0.28, 0.17), (0.5, 0.23), (0.53, 0.14), (0.32, 0.075), (0.11, 0.06)]
             o = [(s * u, v) for u, v in slit]
             patch(f"Eye_{side}_Glow", Hf, F, o if s > 0 else o[::-1], eyeg, thick=0.004, rings=2, closed_smooth=False)
             # cheek seams down from the eyes, ear discs
-            ridge(f"Head_Seam_{side}", Hf, [uvdir(F, s * 0.47, 0.1), uvdir(F, s * 0.5, -0.2), uvdir(F, s * 0.38, -0.5)], dark,
+            ridge(f"Head_Seam_{side}", Hf, [uvdir(F, s * 0.53, 0.1), uvdir(F, s * 0.55, -0.25), uvdir(F, s * 0.4, -0.6)], dark,
                   w=0.006, h=0.002, lean=False)
             p, n = H.at((s, 0.05, -0.05))
             cyl(f"Head_Ear_{side}", p, 0.05, 0.016, gold, rot=aim(n), seg=18)
             cyl(f"Head_Ear_{side}_In", p + n * 0.008, 0.032, 0.01, dark, rot=aim(n), seg=14)
-        ridge("Head_Mouth", Hf, [uvdir(F, -0.17, -0.5), uvdir(F, 0, -0.52), uvdir(F, 0.17, -0.5)], dark, w=0.007, h=0.002, lean=False)
+        ridge("Head_Mouth", Hf, [uvdir(F, -0.2, -0.55), uvdir(F, 0, -0.58), uvdir(F, 0.2, -0.55)], dark, w=0.007, h=0.002, lean=False)
         ridge("Head_Crest", H, [uvdir(F, 0, 0.5), uvdir(F, 0, 1.2), uvdir(F, 0, 2.0), uvdir(F, 0, 2.6)], gold, w=0.035, h=0.004, flat=True)
 
     with limb("Body"):
@@ -703,8 +771,7 @@ def captain_america():
         brow = mat("Brow", "5a3a22", rough=0.5)
         face(H, black, white, skin, brow, mouth, ex=0.33, ez=-0.05, ew=0.028, eh=0.037, brow_z=0.235, angry=0.045, mouth="smirk",
              mz=-0.47, do_ears=False)
-        p, n = H.at((0, -0.75, -0.95))
-        sph("Chin", p - n * 0.01, (0.05, 0.03, 0.03), skin)
+
         # helmet: covers the crown, comes down over the ears; the front edge is a heroic brow line
         HS = S(hc, hr + Vector((0.012, 0.012, 0.012)), taper=0.1, jaw=0.12)
         shell("Helmet", None, None, blue, [((0, 0, -0.45), (0, 0.85, 1)), ((0, 0, -0.62), (0, 0, 1))], inflate=0.0, srf=HS,
@@ -715,8 +782,8 @@ def captain_america():
             ridge(f"Helmet_A{k}", HS, [uvdir(F, *a), uvdir(F, (a[0] + b[0]) / 2, (a[1] + b[1]) / 2), uvdir(F, *b)], wht,
                   w=0.032 if k < 2 else 0.026, h=0.005, flat=True, smooth=1)
         # little white wings at the temples: three swept-back feathers
-        wing = [(0.0, 0.0), (0.03, 0.022), (0.075, 0.052), (0.068, 0.03), (0.098, 0.04), (0.084, 0.012), (0.105, 0.012),
-                (0.08, -0.012), (0.03, -0.018)]
+        wing = [(x * 1.35, y * 1.35) for x, y in [(0.0, 0.0), (0.03, 0.022), (0.075, 0.052), (0.068, 0.03), (0.098, 0.04),
+                                                  (0.084, 0.012), (0.105, 0.012), (0.08, -0.012), (0.03, -0.018)]]
         for s, side in sides():
             p, n = HS.at((s, -0.3, 0.3))
             poly_plate(f"Helmet_Wing_{side}", p + n * 0.001, n, [(s * x, y) for x, y in wing], wht, thick=0.005, up=(0, 0, 1),
@@ -793,15 +860,26 @@ def thor():
                       ((0.75, 0.35, -0.8), 0.07, 0.38, (0.01, 0.01, -0.04)), ((-0.5, -0.2, 0.85), 0.018, 0.3),
                       ((0.5, -0.2, 0.85), 0.018, 0.3), ((0, 0.3, 1), 0.012, 0.4), ((-0.95, 0.0, 0.1), 0.02, 0.4),
                       ((0.95, 0.0, 0.1), 0.02, 0.4)]
-        blob("Hair", hc + Vector((0, 0.014, 0.008)), hr + Vector((0.016, 0.02, 0.016)), hair, hair_bumps, seg=32, ring=18,
-             keep=lambda d: d.z > 0.42 - 0.8 * (1 + d.y) + 0.1 * abs(d.x))
-        ridge("Hair_Part", S(hc + Vector((0, 0.014, 0.008)), hr + Vector((0.016, 0.02, 0.016)), [((-0.5, -0.2, 0.85), 0.018, 0.3),
-              ((0.5, -0.2, 0.85), 0.018, 0.3), ((0, 0.3, 1), 0.012, 0.4)]), [(0.12, -0.5, 0.85), (0.1, 0, 1), (0.08, 0.6, 0.8)],
-              beard, w=0.006, h=0.0005, sink=0.004, lean=False)
+        Hs = hair_shell("Hair", hc + Vector((0, 0.014, 0.008)), hr + Vector((0.016, 0.02, 0.016)), hair, hair_bumps,
+                        [((0, 0, -0.36), (0, 0.8, 1))])
+        ridge("Hair_Part", Hs, [(0.12, -0.6, 0.8), (0.1, 0, 1), (0.08, 0.6, 0.8)], beard, w=0.006, h=0.0005, sink=0.004, lean=False)
+        for k, a in enumerate((-104, -78, -52, -26, 0, 26, 52, 78, 104)):
+            r = math.radians(a)
+            sa, ca = math.sin(r), math.cos(r)
+            root = on_s(Hs, (sa, ca, 0.62), -0.01)
+            m1 = on_s(Hs, (sa, ca, 0.0), 0.012)
+            end = hc + Vector((sa * 0.2, ca * 0.19 + 0.05, -0.27 + 0.025 * (k % 2)))
+            flick = end + Vector((sa * 0.02, ca * 0.02, -0.03))
+            lock(f"Hair_Lock{k}", [root, m1, end, flick], hair if k % 3 else beard, 0.068 if abs(a) < 100 else 0.055, hc, th=0.42,
+                 tip=0.45)
+        # a bold swoop off the parting over the brow
+        lock("Hair_Fringe", [on_s(Hs, (0.12, -0.55, 0.85), -0.004), on_s(Hs, (-0.35, -0.8, 0.55), 0.008),
+                             on_s(Hs, (-0.8, -0.55, 0.3), 0.01), on_s(Hs, (-0.98, -0.1, 0.0), 0.004)], hair, 0.04, hc, th=0.45)
         # short full beard over the jaw, up the cheeks into sideburns; moustache on top
         hb = S(hc, hr + Vector((0.008, 0.01, 0.008)), taper=0.15, jaw=0.06,
                bumps=[((0, -0.55, -1), 0.026, 0.42), ((-0.6, -0.6, -0.7), 0.01, 0.35), ((0.6, -0.6, -0.7), 0.01, 0.35)])
-        shell("Beard", None, None, beard, [((0, 0, -0.06), (0, 0.4, -1)), ((0, 0.3, 0), (0, -1, 0))], inflate=0.0, srf=hb, seg=30, ring=18)
+        shell("Beard", None, None, beard, [((0, 0, -0.2), (0, 0.3, -1)), ((0, 0.3, 0), (0, -1, 0))], inflate=0.0, srf=hb, seg=30, ring=18,
+              lip=0.008)
         for s, side in sides():
             p, n = H.at((s * 0.1, -1, -0.31))
             sph(f"Beard_Stache_{side}", p + n * 0.01, (0.052, 0.016, 0.017), beard, rot=facing(n) @ Quaternion((0, 1, 0), s * 0.3))
@@ -813,8 +891,8 @@ def thor():
         for row, z in enumerate((0.55, 0.15, -0.25)):
             for s in (-1, 1):
                 p, n = C.at((s * 0.36, -1, z))
-                cyl(f"Disc_{row}{s}", p + n * 0.002, 0.034, 0.016, silver, rot=aim(n), seg=18, bevel=0.005)
-                sph(f"Disc_{row}{s}_Dome", p + n * 0.01, (0.024, 0.024, 0.008), silver, rot=aim(n), seg=12, ring=5)
+                sph(f"Disc_{row}{s}", p + n * 0.001, (0.035, 0.035, 0.014), silver, rot=aim(n), seg=14, ring=7)
+                torus(f"Disc_{row}{s}_Rim", p + n * 0.004, 0.03, 0.005, plate, rot=aim(n), seg=14, mseg=4)
         ridge("Chest_Seam", C, [(0, -1, 0.85), (0, -1, -0.8)], plate, w=0.016, h=0.003, flat=True)
         # scale-mail belly, silver belt
         for k, z in enumerate((0.5, 0.05, -0.4)):
@@ -825,8 +903,7 @@ def thor():
         # cape clasps (two big silver discs at the collar), the high cape collar
         for s in (-1, 1):
             p, n = C.at((s * 0.62, -0.55, 0.82))
-            cyl(f"Clasp{s}", p + n * 0.006, 0.036, 0.016, silver, rot=aim(n), seg=18, bevel=0.005)
-            sph(f"Clasp{s}_Dome", p + n * 0.015, (0.025, 0.025, 0.01), silver, rot=aim(n), seg=12, ring=5)
+            sph(f"Clasp{s}", p + n * 0.004, (0.038, 0.038, 0.016), silver, rot=aim(n), seg=14, ring=7)
         torus("Collar", (0, 0.01, 0.69), 0.1, 0.02, armour, scale=(1, 0.85, 1))
     with limb("Cape"):
         g = cape_grid(0.672, 0.085, 0.19, 0.29, 0.118, lambda v: 0.055 * min(1, v * 3.2) + 0.06 * v, folds=3, fold_amp=0.014,
@@ -848,11 +925,481 @@ def thor():
             pass
     pv = dict(P["pivots"])
     pv["Cape"] = (0, 0.118, 0.672)
-    return dict(P=P, pivots=pv, backdrop="dfe2ea", target=(0, 0, 0.55), dist=2.35)
+    return dict(P=P, pivots=pv, backdrop="dfe2ea", target=(0, 0, 0.55), dist=2.35, budget=7500)
+
+
+# ====================================================================== 5. Hulk
+def hulk():
+    reset("Hulk")
+    black, white = common_mats()
+    green = mat("HulkGreen", "5da13b", rough=0.42, coat=0.35, sss=0.1)
+    green2 = mat("HulkGreenDark", "467f2c", rough=0.45, coat=0.3, sss=0.08)
+    hair = mat("Hair", "1b211a", rough=0.5, coat=0.2)
+    shorts = mat("Shorts", "6c3fa6", rough=0.5, coat=0.25)
+    shorts2 = mat("ShortsDark", "4c2a7d", rough=0.5, coat=0.2)
+    mouth = mat("Mouth", "3a1a18", rough=0.4)
+    tooth = mat("Tooth", "fffdf4", rough=0.25, coat=0.7)
+    nail = mat("Nail", "7fb35e", rough=0.3, coat=0.6)
+
+    hx, hz = 0.135, 0.42
+    sx, sz = 0.33, 0.905
+    with limb("Body"):
+        C = S((0, 0.0, 0.79), (0.33, 0.21, 0.2),
+              [((-0.42, -1, 0.25), 0.06, 0.34), ((0.42, -1, 0.25), 0.06, 0.34), ((-0.42, 0.25, 0.9), 0.1, 0.32),
+               ((0.42, 0.25, 0.9), 0.1, 0.32), ((-0.9, 0.2, 0.3), 0.035, 0.4), ((0.9, 0.2, 0.3), 0.035, 0.4), ((0, 0.8, 0.5), 0.03, 0.5)],
+              taper=0.32)
+        C.mesh("Chest", green, seg=32, ring=18)
+        W = S((0, 0.015, 0.57), (0.225, 0.165, 0.13))
+        W.mesh("Waist", green, seg=28, ring=14)
+        for row, z in enumerate((0.55, 0.15, -0.25)):
+            for s in (-1, 1):
+                p, n = W.at((s * 0.2, -1, z))
+                sph(f"Abs_{row}{s}", p - n * 0.012, (0.05, 0.024, 0.036), green, rot=facing(n), seg=12, ring=6)
+        ridge("Chest_Split", C, [(0, -1, 0.65), (0, -1, 0.0), (0, -1, -0.5)], green2, w=0.012, h=0.001, sink=0.004, lean=False)
+        Pv = S((0, 0.012, 0.445), (0.255, 0.19, 0.12))
+        Pv.mesh("Shorts", shorts, seg=28, ring=14)
+        torus("Shorts_Waistband", (0, 0.012, 0.52), 0.235, 0.022, shorts2, scale=(1, 0.77, 1), seg=28)
+        cyl("Neck", (0, -0.04, 0.98), 0.1, 0.12, green, seg=18)
+        sph("Traps", (0, 0.04, 0.95), (0.17, 0.11, 0.085), green, seg=20, ring=10)
+    with limb("Head"):
+        hc, hr = Vector((0, -0.09, 1.1)), Vector((0.155, 0.15, 0.17))
+        H = S(hc, hr, taper=0.0, jaw=0.25, bumps=[((0, -1, 0.35), 0.022, 0.3), ((-0.6, -0.5, -0.6), 0.03, 0.4),
+                                                  ((0.6, -0.5, -0.6), 0.03, 0.4)])
+        H.mesh("Head", green, seg=28, ring=16)
+        # heavy brow, angry eyes, gritted teeth
+        for s, side in sides():
+            eye_s(f"Eye_{side}", H, (s * 0.33, -1, 0.05), 0.026, 0.026, black, white)
+            pts = [on_s(H, (s * 0.12, -1, 0.17), 0.006), on_s(H, (s * 0.33, -1, 0.27), 0.01), on_s(H, (s * 0.55, -1, 0.3), 0.006)]
+            tube(f"Brow_{side}", pts, green2, r=0.02, radii=[0.8, 1.0, 0.7], caps=False)
+            p, n = H.at((s, 0.05, -0.02))
+            sph(f"Ear_{side}", p - n * 0.006, (0.024, 0.026, 0.04), green)
+        p, n = H.at((0, -1, -0.1))
+        sph("Nose", p, (0.032, 0.024, 0.024), green, seg=12, ring=6)
+        p, n = H.at((0, -1, -0.47))
+        q = facing(n)
+        sph("Mouth", p - n * 0.006, (0.082, 0.016, 0.036), mouth, rot=q, seg=16, ring=8)
+        box("Mouth_TeethTop", p + n * 0.003 + q @ Vector((0, 0, 0.012)), (0.12, 0.012, 0.018), tooth, bevel=0.005, rot=q)
+        box("Mouth_TeethBot", p + n * 0.002 + q @ Vector((0, 0, -0.013)), (0.1, 0.012, 0.016), tooth, bevel=0.005, rot=q)
+        # messy black hair
+        hh = S(hc + Vector((0, 0.012, 0.012)), hr + Vector((0.012, 0.014, 0.012)))
+        bumps = [((-0.3, -0.6, 0.75), 0.03, 0.2, (0, -0.01, -0.01)), ((0.25, -0.6, 0.75), 0.028, 0.2, (0, -0.01, -0.015)),
+                 ((0.0, -0.5, 0.85), 0.03, 0.22), ((-0.6, 0, 0.8), 0.03, 0.25), ((0.6, 0.1, 0.8), 0.03, 0.25),
+                 ((0, 0.4, 0.9), 0.035, 0.3), ((-0.4, 0.6, 0.6), 0.03, 0.3), ((0.4, 0.6, 0.6), 0.03, 0.3), ((0, 0.9, 0.0), 0.02, 0.4)]
+        Hs = hair_shell("Hair", hh.c, hh.r, hair, bumps, [((0, 0, -0.32), (0, 0.75, 1))], seg=28, ring=16)
+        for k, (x, y, z, dx, dy) in enumerate(((-0.45, -0.7, 0.55, -0.3, -0.6), (-0.15, -0.8, 0.6, 0.1, -0.8), (0.2, -0.78, 0.6, 0.35, -0.6),
+                                               (0.5, -0.6, 0.55, 0.6, -0.3), (-0.3, -0.2, 0.95, -0.4, 0.3), (0.2, -0.1, 0.98, 0.3, 0.4),
+                                               (0.0, 0.5, 0.85, 0.0, 1.0), (-0.6, 0.4, 0.6, -0.8, 0.5), (0.6, 0.4, 0.6, 0.8, 0.5))):
+            root = on_s(Hs, (x, y, z), -0.012)
+            tip_ = root + Vector((dx * 0.07, dy * 0.07, 0.05 + 0.012 * (k % 2)))
+            lock(f"Hair_Spike{k}", [root, (root + tip_) / 2 + Vector((0, 0, 0.014)), tip_], hair, 0.05, hh.c, th=0.55, tip=0.1)
+    for s, side in sides():
+        with limb("Arm" + side):
+            sh = V(s * sx, 0, sz)
+            el = V(s * (sx + 0.05), 0.02, 0.69)
+            wr = V(s * (sx + 0.075), -0.02, 0.54)
+            fc = V(s * (sx + 0.08), -0.035, 0.455)
+            sph(f"Shoulder_{side}", sh + V(s * 0.01, 0, 0.0), (0.112, 0.105, 0.11), green, seg=20, ring=10)
+            tube(f"Arm_{side}", [sh + V(s * 0.02, 0, -0.05), (sh + el) / 2 + V(s * 0.015, -0.01, 0), el], green, r=0.082,
+                 radii=[1.0, 1.08, 0.82], caps=False)
+            sph(f"Arm_{side}_Elbow", el, (0.07, 0.07, 0.07), green)
+            tube(f"Arm_{side}_Fore", [el, (el + wr) / 2 + V(s * 0.012, -0.012, 0), wr], green, r=0.088, radii=[0.8, 1.08, 0.95],
+                 caps=False)
+            fr = (0.105, 0.108, 0.112)
+            sph(f"Hand_{side}", fc, fr, green, seg=18, ring=10)
+            G = S(fc, fr)
+            for k in range(4):
+                p, n = G.at((s * (0.55 - 0.36 * k), -0.85, -0.25))
+                sph(f"Hand_{side}_Knuckle{k}", p - n * 0.012, (0.03, 0.03, 0.032), green, seg=10, ring=5)
+            sph(f"Hand_{side}_Thumb", fc + V(-s * 0.06, -0.075, 0.03), (0.04, 0.038, 0.05), green, seg=12, ring=6)
+            sph(f"Arm_{side}_Bicep", (sh + el) / 2 + V(0, -0.045, 0.01), (0.07, 0.05, 0.075), green, seg=14, ring=7)
+        with limb("Leg" + side):
+            hip = V(s * hx, 0, hz)
+            kn = V(s * (hx + 0.012), -0.01, 0.225)
+            an = V(s * (hx + 0.015), 0.0, 0.085)
+            tube(f"Leg_{side}", [hip, (hip + kn) / 2, kn], green, r=0.105, radii=[1.0, 1.02, 0.78], caps=False)
+            sph(f"Leg_{side}_Knee", kn, (0.084, 0.084, 0.084), green)
+            tube(f"Leg_{side}_Shin", [kn, an], green, r=0.088, radii=[0.92, 0.8], caps=False)
+            # torn purple shorts leg, jagged hem
+            tube(f"Leg_{side}_Shorts", [hip + V(0, 0, 0.05), hip + V(s * 0.006, -0.004, -0.115)], shorts, r=0.122, radii=[1.04, 1.0],
+                 caps=False)
+            for k in range(9):
+                a = 2 * math.pi * k / 9 + s * 0.3
+                d = Vector((math.cos(a), math.sin(a) * 0.95, 0))
+                base = hip + V(s * 0.006, -0.004, -0.1) + d * 0.112
+                cone(f"Leg_{side}_Tear{k}", base, (d.x * 0.25, d.y * 0.25, -1), 0.034 + 0.01 * (k % 2), 0.05 + 0.028 * ((k * 5) % 3),
+                     shorts, seg=6, flatten=0.45, twist=a + math.pi / 2)
+            # big bare feet
+            fx = s * (hx + 0.018)
+            sph(f"Foot_{side}", V(fx, -0.045, 0.05), (0.088, 0.135, 0.06), green, seg=18, ring=9)
+            for k in range(4):
+                sph(f"Foot_{side}_Toe{k}", V(fx + s * (0.05 - 0.032 * k), -0.165 + 0.008 * abs(k - 1.2), 0.035),
+                    (0.022, 0.024, 0.022), green, seg=10, ring=5)
+    pv = {"Body": (0, 0, 0), "Head": (0, -0.06, 0.98), "ArmL": (-sx, 0, sz), "ArmR": (sx, 0, sz),
+          "LegL": (-hx, 0, hz), "LegR": (hx, 0, hz)}
+    P = dict(head_c=(0, -0.09, 1.1), head_r=(0.155, 0.15, 0.17))
+    return dict(P=P, pivots=pv, backdrop="e2e8dc", target=(0, 0, 0.68), dist=2.9, budget=8000,
+                portrait_target=(0, -0.05, 1.03), portrait_dist=1.45)
+
+
+# ====================================================================== 6. Black Widow
+def black_widow():
+    reset("BlackWidow")
+    black, white = common_mats()
+    suit = mat("WidowSuit", "1e2027", rough=0.28, coat=0.9)
+    seam = mat("WidowSeam", "3b3f4b", rough=0.35, coat=0.6)
+    silver = mat("Silver", "c4c9d2", rough=0.18, metal=1.0, coat=0.4)
+    red = mat("HourglassRed", "d0252c", rough=0.25, coat=0.8)
+    glow = mat("WidowBite", "d8f6ff", rough=0.1, coat=0.4, emit="5fd3ff", emit_strength=6)
+    hair = mat("Hair", "bf3a1e", rough=0.42, coat=0.3)
+    skin = mat("Skin", "f1c7a8", rough=0.42, coat=0.25, sss=0.12)
+    lips = mat("Lips", "b8434a", rough=0.35, coat=0.4)
+    blush = mat("Blush", "f29a8c", rough=0.6, coat=0.0)
+    sole = mat("Sole", "111216", rough=0.6, coat=0.1)
+
+    P = figure(dict(chest=suit, waist=suit, pelvis=suit, shoulder=suit, upper=suit, fore=suit, cuff=silver, glove=suit,
+                    thigh=suit, shin=suit, boot=suit, sole=sole, boot_rim=seam),
+               dict(sx=0.19, sz=0.62, hx=0.074, chest_r=(0.162, 0.118, 0.138), pecs=0.008, lats=0.004, chest_taper=0.25,
+                    waist_r=(0.116, 0.094, 0.09), pelvis_r=(0.148, 0.114, 0.074), delt=(0.044, 0.044, 0.05), arm_r=0.033,
+                    fore_r=0.034, fist=(0.04, 0.042, 0.046), thigh_r=0.058, shin_r=0.046, boot_top=0.17,
+                    head_r=(0.172, 0.165, 0.182)))
+    C, W = P["C"], P["W"]
+    hc = Vector(P["head_c"])
+    hr = Vector((0.172, 0.165, 0.182))
+    H = S(hc, hr, taper=0.2, jaw=0.05)
+    with limb("Head"):
+        neck(P, suit, 0.046)
+        H.mesh("Head", skin, seg=28, ring=16)
+        face(H, black, white, skin, hair, lips, ex=0.34, ez=-0.03, ew=0.03, eh=0.04, brow_z=0.25, angry=0.02, brow_r=0.009,
+             mouth="smirk", mz=-0.44, blush=blush, do_ears=False)
+        for s, side in sides():
+            tube(f"Eye_{side}_Lash", [on_s(H, (s * 0.46, -1, 0.07), 0.006), on_s(H, (s * 0.55, -1, 0.11), 0.01)], black, r=0.006,
+                 radii=[1, 0.5], caps=False)
+        # red hair: soft side-parted bob that flips out at the shoulders
+        hh_c, hh_r = hc + Vector((0, 0.016, 0.012)), hr + Vector((0.018, 0.02, 0.016))
+        bumps = [((0, 0.5, -1), 0.07, 0.6, (0, 0.012, -0.03)), ((-0.85, 0.1, -0.75), 0.055, 0.42, (-0.025, 0, -0.02)),
+                 ((0.85, 0.1, -0.75), 0.055, 0.42, (0.025, 0, -0.02)), ((0.35, -0.6, 0.7), 0.025, 0.32, (0.012, -0.004, 0)),
+                 ((-0.5, -0.3, 0.8), 0.016, 0.3), ((0, 0.2, 1), 0.015, 0.4)]
+        hair2 = mat("HairDark", "9c2c16", rough=0.45, coat=0.25)
+        Hs = hair_shell("Hair", hh_c, hh_r, hair, bumps, [((0, 0, -0.4), (-0.12, 0.85, 1))])
+        ridge("Hair_Part", Hs, [(-0.3, -0.6, 0.8), (-0.25, 0, 1), (-0.2, 0.6, 0.8)], hair2, w=0.005, h=0.0, sink=0.003, lean=False)
+        for k, a in enumerate((-118, -88, -58, -28, 2, 32, 62, 92, 120)):
+            r = math.radians(a)
+            sa, ca = math.sin(r), math.cos(r)
+            root = on_s(Hs, (sa * 0.8 - 0.25, ca * 0.8, 0.75), -0.01)
+            m1 = on_s(Hs, (sa, ca, 0.05), 0.012)
+            end = hc + Vector((sa * 0.215, ca * 0.2 + 0.02, -0.2))
+            flick = hc + Vector((sa * 0.262, ca * 0.24 + 0.02, -0.165))
+            lock(f"Hair_Lock{k}", [root, m1, end, flick], hair if k % 2 else hair2, 0.062, hc, th=0.45, tip=0.5)
+        lock("Hair_Fringe", [on_s(Hs, (-0.28, -0.6, 0.78), -0.004), on_s(Hs, (0.1, -0.9, 0.55), 0.008),
+                             on_s(Hs, (0.6, -0.75, 0.35), 0.01), on_s(Hs, (0.95, -0.25, 0.1), 0.006)], hair, 0.05, hc, th=0.45)
+    with limb("Body"):
+        # zip, panel seams, silver belt with the red hourglass
+        ridge("Chest_Zip", C, [(0, -1, 0.9), (0, -1, 0.3), (0, -1, -0.4), (0, -1, -0.9)], silver, w=0.006, h=0.003, lean=False)
+        torus("Collar", (0, 0.005, 0.69), 0.07, 0.014, suit, scale=(1, 0.9, 1))
+        for s in (-1, 1):
+            ridge(f"Chest_Seam{s}", C, [(s * 0.2, -1, 0.95), (s * 0.5, -1, 0.3), (s * 0.85, -0.5, -0.2), (s, 0, -0.6)], seam, w=0.006,
+                  h=0.0025)
+            ridge(f"Waist_Seam{s}", W, [(s * 0.5, -1, 0.9), (s * 0.4, -1, 0), (s * 0.3, -1, -0.9)], seam, w=0.006, h=0.0025)
+        torus("Belt", (0, 0.008, 0.39), 0.143, 0.013, silver, scale=(1, 0.8, 1), seg=24)
+        bp, bn = P["Pv"].at((0, -1, 0.42))
+        cyl("Belt_Buckle", bp + bn * 0.012, 0.032, 0.012, silver, rot=aim(bn), seg=18)
+        poly_plate("Belt_Hourglass", bp + bn * 0.019, bn, [(-0.018, 0.022), (0.018, 0.022), (0.0035, 0.0), (0.018, -0.022),
+                                                             (-0.018, -0.022), (-0.0035, 0.0)], red, thick=0.003, dome=0.1)
+        for s in (-1, 1):
+            p, n = P["Pv"].at((s * 0.75, -0.6, 0.42))
+            box(f"Belt_Pouch{s}", p + n * 0.012, (0.026, 0.02, 0.032), seam, bevel=0.006, rot=facing(n))
+    for s, side in sides():
+        with limb("Arm" + side):
+            el, wr = P["elbow"][side], P["wrist"][side]
+            d = (wr - el).normalized()
+            for k, t in enumerate((0.45, 0.8)):
+                torus(f"Arm_{side}_Bite{k}", el + (wr - el) * t, P["fore_r"] * 1.12, 0.009, silver, rot=aim(d), seg=16)
+            cyl(f"Arm_{side}_BiteGlow", el + (wr - el) * 0.625, P["fore_r"] * 1.1, 0.022, glow, rot=aim(d), seg=16)
+            p, n = S(P["fist_c"][side], P["fist"]).at((s * 0.5, -0.4, 0.7))
+        with limb("Leg" + side):
+            kn = P["knee"][side]
+            sph(f"Leg_{side}_Kneepad", kn + V(0, -0.03, 0), (0.04, 0.02, 0.04), seam)
+    return dict(P=P, backdrop="e6dfe4", target=(0, 0, 0.55), dist=2.35)
+
+
+# ====================================================================== 7. Hawkeye
+def hawkeye():
+    reset("Hawkeye")
+    black, white = common_mats()
+    suit = mat("HawkSuit", "23242b", rough=0.35, coat=0.7)
+    purple = mat("HawkPurple", "6e3fb0", rough=0.32, coat=0.75)
+    purple2 = mat("HawkPurpleDark", "4a2a7a", rough=0.35, coat=0.6)
+    leather = mat("Leather", "3d2a20", rough=0.4, coat=0.5)
+    silver = mat("Silver", "c0c6cf", rough=0.2, metal=1.0, coat=0.3)
+    skin = mat("Skin", "e9b28c", rough=0.45, coat=0.25, sss=0.12)
+    hair = mat("Hair", "9a7448", rough=0.45, coat=0.25)
+    mouth = mat("Mouth", "6a2a20", rough=0.4)
+    shaft = mat("ArrowShaft", "2b2b30", rough=0.3, metal=0.4, coat=0.5)
+    sole = mat("Sole", "141418", rough=0.6, coat=0.1)
+
+    P = figure(dict(chest=suit, waist=suit, pelvis=suit, shoulder=purple, upper=suit, fore=suit, cuff=suit, glove=suit,
+                    thigh=suit, shin=suit, boot=suit, sole=sole, boot_rim=purple2), dict(pecs=0.016, boot_top=0.16))
+    C, W = P["C"], P["W"]
+    hc = Vector(P["head_c"])
+    hr = Vector((0.172, 0.166, 0.186))
+    H = S(hc, hr, taper=0.14, jaw=0.08)
+    with limb("Head"):
+        neck(P, suit, 0.052)
+        H.mesh("Head", skin, seg=28, ring=16)
+        face(H, black, white, skin, hair, mouth, ex=0.33, ez=-0.02, ew=0.028, eh=0.036, brow_z=0.24, angry=0.07, mouth="smirk",
+             mz=-0.45, do_ears=True)
+        # short spiky hair
+        bumps = [((0, -0.75, 0.62), 0.03, 0.18, (0, -0.008, 0.01)), ((-0.35, -0.6, 0.7), 0.028, 0.18, (0, -0.006, 0.01)),
+                 ((0.35, -0.6, 0.7), 0.028, 0.18, (0, -0.006, 0.01)), ((0, -0.2, 1), 0.035, 0.22), ((-0.45, 0, 0.9), 0.03, 0.22),
+                 ((0.45, 0, 0.9), 0.03, 0.22), ((0, 0.5, 0.85), 0.028, 0.25), ((-0.4, 0.6, 0.6), 0.02, 0.25), ((0.4, 0.6, 0.6), 0.02, 0.25)]
+        Hs = hair_shell("Hair", hc + Vector((0, 0.012, 0.012)), hr + Vector((0.01, 0.012, 0.01)), hair, bumps,
+                        [((0, 0, -0.42), (0, 0.95, 1))], seg=30, ring=16, lip=0.01)
+        for k, (x, y) in enumerate(((-0.4, -0.7), (-0.12, -0.78), (0.18, -0.75), (0.45, -0.62), (-0.25, -0.35), (0.1, -0.4),
+                                    (0.4, -0.25), (-0.45, -0.05), (0.0, 0.0))):
+            root = on_s(Hs, (x, y, 0.7), -0.012)
+            tip_ = on_s(Hs, (x * 1.1, y * 0.6 + 0.25, 1.0), 0.035 + 0.01 * (k % 2))
+            lock(f"Hair_Spike{k}", [root, (root + tip_) / 2 + Vector((0, 0, 0.012)), tip_], hair, 0.034, hc, th=0.6, tip=0.1)
+    with limb("Body"):
+        # purple shoulder yoke and side panels, V neck, bow-and-arrow chevron
+        shell("Chest_Yoke", None, None, purple, [((0, 0, 0.62), (0, -0.25, 1))], inflate=0.008, srf=C, seg=28, ring=16)
+        for s, side in sides():
+            shell(f"Chest_Side_{side}", None, None, purple, [((s * 0.72, 0, 0), (s, 0, 0.0))], inflate=0.008, srf=C, seg=28, ring=16)
+        sp, sn = C.at((-0.4, -1, 0.3))
+        poly_plate("Chest_Logo", sp + sn * 0.002, sn, [(0, 0.03), (0.028, -0.004), (0.016, -0.004), (0.016, -0.028), (-0.016, -0.028),
+                                                     (-0.016, -0.004), (-0.028, -0.004)], purple, thick=0.005)
+        torus("Belt", (0, 0.008, 0.39), 0.142, 0.016, leather, scale=(1, 0.8, 1))
+        bp, bn = P["Pv"].at((0, -1, 0.42))
+        box("Belt_Buckle", bp + bn * 0.012, (0.04, 0.014, 0.03), purple, bevel=0.006, rot=facing(bn))
+        # quiver strap across the chest
+        pts = [on_s(C, d, 0.006) for d in [(-0.75, -0.6, 0.85), (-0.45, -1, 0.45), (0.0, -1, -0.15), (0.5, -1, -0.65), (0.8, -0.4, -0.95)]]
+        tube("Strap", pts, leather, r=0.011, caps=False)
+        # quiver on the back, angled over the right shoulder; arrows with purple fletching
+        qa, qb = Vector((0.1, 0.19, 0.36)), Vector((-0.07, 0.2, 0.7))
+        cyl_between("Quiver", qa, qb, 0.048, leather, r2=0.054, seg=16)
+        torus("Quiver_Rim", qb + (qb - qa).normalized() * 0.003, 0.054, 0.008, purple2, rot=aim(qb - qa), seg=16)
+        torus("Quiver_Band", qa + (qb - qa) * 0.3, 0.052, 0.007, purple, rot=aim(qb - qa), seg=16)
+        dq = (qb - qa).normalized()
+        sd = dq.cross(Vector((0, 1, 0))).normalized()
+        for k, (a, b) in enumerate(((0, 0), (0.024, 0.016), (-0.024, 0.012), (0.012, -0.022), (-0.014, -0.02))):
+            base = qb + sd * a + Vector((0, b, 0))
+            tip = base + dq * (0.12 + 0.012 * (k % 2))
+            cyl_between(f"Arrow{k}", base - dq * 0.04, tip, 0.0045, shaft, seg=6)
+            for j in range(2):
+                fq = aim(dq, j * math.pi / 2 + k)
+                box(f"Arrow{k}_Fletch{j}", tip - dq * 0.025, (0.026, 0.003, 0.04), purple, bevel=0.001, rot=fq)
+    for s, side in sides():
+        with limb("Arm" + side):
+            el, wr = P["elbow"][side], P["wrist"][side]
+            if s < 0:  # bow-arm guard on the left forearm
+                tube(f"Arm_{side}_Guard", [el + (wr - el) * 0.1, wr + (el - wr) * 0.05], purple, r=P["fore_r"] * 1.18,
+                     radii=[1.0, 1.06], caps=False)
+                for t in (0.3, 0.6):
+                    torus(f"Arm_{side}_GuardStrap{t}", el + (wr - el) * t, P["fore_r"] * 1.24, 0.006, leather, rot=aim(wr - el), seg=14)
+            else:
+                torus(f"Arm_{side}_Wrap", wr + (el - wr) * 0.15, P["fore_r"] * 1.1, 0.008, purple2, rot=aim(wr - el), seg=14)
+            Sh = S(P["shoulder"][side], P["delt"])
+        with limb("Leg" + side):
+            sh = P["knee"][side]
+            p = (V(s * P["hx"], 0, P["hz"]) + sh) / 2
+            tube(f"Leg_{side}_Stripe", [p + V(s * 0.061, 0, 0.08), p + V(s * 0.056, 0, -0.08)], purple, r=0.012, caps=False)
+    return dict(P=P, backdrop="e4e0ec", target=(0, 0, 0.55), dist=2.35)
+
+
+# ====================================================================== 8. Black Panther
+def black_panther():
+    reset("BlackPanther")
+    black, white = common_mats()
+    suit = mat("PantherSuit", "1b1b23", rough=0.26, metal=0.35, coat=1.0)
+    suit2 = mat("PantherWeave", "26252f", rough=0.32, metal=0.3, coat=0.8)
+    silver = mat("Vibranium", "d6dae4", rough=0.14, metal=1.0, coat=0.4)
+    glowp = mat("KineticPurple", "c39bff", rough=0.15, coat=0.4, emit="9b5cff", emit_strength=4)
+    lens = mat("PantherEyes", "f4f7ff", rough=0.06, coat=1.0, emit="ffffff", emit_strength=0.5)
+    sole = mat("Sole", "101015", rough=0.6, coat=0.1)
+
+    P = figure(dict(chest=suit, waist=suit2, pelvis=suit, shoulder=suit, upper=suit, fore=suit, cuff=suit, glove=suit,
+                    thigh=suit, shin=suit, boot=suit, sole=sole, boot_rim=silver), dict(pecs=0.018, boot_top=0.16))
+    C, W = P["C"], P["W"]
+    hc = Vector(P["head_c"])
+    H = S(hc, (0.17, 0.168, 0.192), taper=0.3, jaw=0.06)
+    F = (0, -1, 0)
+    with limb("Head"):
+        neck(P, suit, 0.05)
+        H.mesh("Head", suit, seg=30, ring=18)
+        # pointed cat ears
+        for s, side in sides():
+            p, n = H.at((s * 0.62, 0.05, 0.78))
+            cone(f"Ear_{side}", p - n * 0.012, (s * 0.45, 0.05, 1), 0.045, 0.085, suit, seg=10, flatten=0.45)
+            cone(f"Ear_{side}_Rim", p - n * 0.006 + V(0, -0.006, 0), (s * 0.45, 0.05, 1), 0.035, 0.068, silver, seg=8, flatten=0.3)
+        # angular white eyes with silver frames
+        eyeo = [(0.1, 0.05), (0.22, 0.13), (0.42, 0.2), (0.5, 0.16), (0.42, 0.06), (0.24, 0.0)]
+        for s, side in sides():
+            o = [(s * u, v) for u, v in eyeo]
+            o = o if s > 0 else o[::-1]
+            patch(f"Eye_{side}_Frame", H, F, offset_outline(o, 0.03), silver, thick=0.006, rings=2, closed_smooth=False)
+            patch(f"Eye_{side}_Lens", H, F, o, lens, thick=0.0095, rings=2, closed_smooth=False)
+            # silver lines framing the face: brow line to the ear, jaw line to the chin
+            ridge(f"Head_Line_{side}", H, [uvdir(F, s * 0.05, 0.12), uvdir(F, s * 0.3, 0.33), uvdir(F, s * 0.62, 0.42),
+                                           uvdir(F, s * 1.0, 0.45)], silver, w=0.007, h=0.003, lean=False)
+            ridge(f"Head_Jaw_{side}", H, [uvdir(F, s * 0.55, 0.0), uvdir(F, s * 0.5, -0.4), uvdir(F, s * 0.25, -0.62),
+                                          uvdir(F, s * 0.02, -0.68)], silver, w=0.007, h=0.003, lean=False)
+        ridge("Head_Crest", H, [uvdir(F, 0, 0.14), uvdir(F, 0, 0.6), uvdir(F, 0, 1.2), uvdir(F, 0, 2.0), uvdir(F, 0, 2.6)], silver,
+              w=0.008, h=0.003, lean=False)
+        ridge("Head_Mouth", H, [uvdir(F, -0.12, -0.42), uvdir(F, 0, -0.45), uvdir(F, 0.12, -0.42)], suit2, w=0.008, h=0.002, lean=False)
+    with limb("Body"):
+        # vibranium fang necklace, lying on the chest around the neck
+        up = (0, 0, 1)
+        ring = [on_s(C, polar(up, 0.6, math.radians(-90 + a)), 0.006) for a in range(-180, 180, 20)]
+        tube("Necklace", ring + ring[:1], silver, r=0.008, caps=False)
+        for k in range(9):
+            a = math.radians(-90 - 64 + 16 * k)
+            p, n = C.at(polar(up, 0.62, a))
+            down = polar(up, 0.9, a)
+            t = (C.at(down)[0] - p).normalized()
+            cone(f"Necklace_Fang{k}", p + n * 0.004, t + n * 0.25, 0.011, 0.034 + 0.01 * math.cos(a + math.pi / 2), silver, seg=6, flatten=0.5)
+        # silver triangle pattern down the chest, faint purple kinetic lines beside it
+        for s in (-1, 1):
+            ridge(f"Chest_V{s}", C, [(s * 0.45, -1, 0.82), (s * 0.3, -1, 0.35), (s * 0.12, -1, -0.15), (0, -1, -0.55)], silver, w=0.007,
+                  h=0.003)
+            ridge(f"Chest_Pec{s}", C, [(s * 0.3, -1, 0.35), (s * 0.6, -1, 0.15), (s * 0.95, -0.4, 0.05)], silver, w=0.006, h=0.003)
+            ridge(f"Chest_Glow{s}", C, [(s * 0.58, -1, 0.75), (s * 0.4, -1, 0.3), (s * 0.18, -1, -0.25), (s * 0.06, -1, -0.65)], glowp,
+                  w=0.005, h=0.002)
+            ridge(f"Waist_V{s}", W, [(s * 0.6, -1, 0.85), (s * 0.3, -1, 0.0), (s * 0.1, -1, -0.8)], silver, w=0.006, h=0.003)
+        for k, z in enumerate((-0.15, -0.55)):
+            ridge(f"Chest_Tri{k}", C, [(-0.2 + 0.1 * k, -1, z), (0, -1, z - 0.12), (0.2 - 0.1 * k, -1, z)], silver, w=0.006, h=0.003)
+        torus("Belt", (0, 0.008, 0.392), 0.142, 0.012, silver, scale=(1, 0.8, 1), seg=24)
+        bp, bn = P["Pv"].at((0, -1, 0.4))
+        poly_plate("Belt_Buckle", bp + bn * 0.008, bn, [(0, -0.026), (0.03, 0.014), (-0.03, 0.014)], silver, thick=0.006)
+    for s, side in sides():
+        with limb("Arm" + side):
+            el, wr = P["elbow"][side], P["wrist"][side]
+            d = (wr - el).normalized()
+            torus(f"Arm_{side}_Band", el + (wr - el) * 0.78, P["fore_r"] * 1.12, 0.008, silver, rot=aim(d), seg=14)
+            ridge(f"Arm_{side}_Glow", S(P["shoulder"][side], P["delt"]), [(s * 0.3, -1, 0.3), (s, 0, 0.5), (s * 0.3, 1, 0.3)], glowp,
+                  w=0.005, h=0.002, lean=False)
+            fc, fr = P["fist_c"][side], P["fist"]
+            G = S(fc, fr)
+            for k in range(3):
+                p, n = G.at((s * (0.45 - 0.45 * k), -0.85, -0.5))
+                cone(f"Hand_{side}_Claw{k}", p - n * 0.004, (n.x * 0.4, n.y, -0.8), 0.008, 0.032, silver, seg=6)
+        with limb("Leg" + side):
+            kn = P["knee"][side]
+            ridge(f"Leg_{side}_Knee", S(kn, (P["shin_r"] * 1.02,) * 3), [(s * 0.8, -0.6, 0.6), (0, -1, 0.2), (-s * 0.8, -0.6, 0.6)], silver,
+                  w=0.006, h=0.003, lean=False)
+    return dict(P=P, backdrop="e2e0ea", target=(0, 0, 0.55), dist=2.35, portrait_target=(0, 0, 0.8), portrait_dist=1.25)
+
+
+# ====================================================================== 9. Doctor Strange
+def doctor_strange():
+    reset("DoctorStrange")
+    black, white = common_mats()
+    tunic = mat("Tunic", "22457c", rough=0.48, coat=0.35)
+    tunic2 = mat("TunicDark", "172d55", rough=0.5, coat=0.3)
+    sash = mat("Sash", "7a4c2a", rough=0.45, coat=0.35)
+    sash2 = mat("SashDark", "5a3720", rough=0.45, coat=0.3)
+    gold = mat("Gold", "e2ad3e", rough=0.2, metal=0.95, coat=0.5)
+    gem = mat("TimeStone", "b8ffc8", rough=0.05, coat=1.0, emit="3dff6a", emit_strength=7)
+    cloak = mat("Cloak", "b3202c", rough=0.48, coat=0.3)
+    cloak2 = mat("CloakTrim", "e0ad42", rough=0.3, metal=0.7, coat=0.4)
+    glove = mat("Glove", "5c5651", rough=0.45, coat=0.3)
+    pants = mat("Pants", "1f2436", rough=0.5, coat=0.25)
+    boot = mat("Boot", "3e2b20", rough=0.4, coat=0.4)
+    sole = mat("Sole", "1c1612", rough=0.6, coat=0.1)
+    skin = mat("Skin", "e8b08b", rough=0.45, coat=0.25, sss=0.12)
+    hair = mat("Hair", "241c18", rough=0.45, coat=0.25)
+    grey = mat("GreyHair", "c3c6ca", rough=0.45, coat=0.25)
+    mouth = mat("Mouth", "6a2a20", rough=0.4)
+
+    P = figure(dict(chest=tunic, waist=sash, pelvis=tunic2, shoulder=tunic, upper=tunic, fore=tunic2, cuff=sash, glove=glove,
+                    thigh=pants, shin=pants, boot=boot, sole=sole, boot_rim=sash2), dict(pecs=0.012, boot_top=0.17))
+    C, W = P["C"], P["W"]
+    hc = Vector(P["head_c"])
+    hr = Vector((0.17, 0.164, 0.188))
+    H = S(hc, hr, taper=0.17, jaw=0.08)
+    with limb("Head"):
+        neck(P, skin, 0.05)
+        H.mesh("Head", skin, seg=28, ring=16)
+        face(H, black, white, skin, hair, mouth, ex=0.33, ez=-0.02, ew=0.028, eh=0.038, brow_z=0.24, angry=0.03, mouth=None,
+             brow_lift=(0.0, 0.05), do_ears=True)
+        # swept-back black hair with silver temples
+        hh_c, hh_r = hc + Vector((0, 0.014, 0.006)), hr + Vector((0.01, 0.014, 0.008))
+        bumps = [((0, -0.6, 0.8), 0.028, 0.3, (0, 0.008, 0.006)), ((0, 0.2, 1), 0.012, 0.4), ((0, 0.8, 0.5), 0.012, 0.4)]
+        Hh = hair_shell("Hair", hh_c, hh_r, hair, bumps, [((0, 0, -0.37), (0, 0.85, 1))], seg=30, ring=16, lip=0.01)
+        for k, x in enumerate((-0.42, 0.0, 0.42)):
+            root = on_s(Hh, (x, -0.9, 0.45), -0.008)
+            lock(f"Hair_Swept{k}", [root, on_s(Hh, (x * 1.05, -0.5, 0.95), 0.008), on_s(Hh, (x * 1.1, 0.25, 1.0), 0.006),
+                                    on_s(Hh, (x * 1.15, 0.85, 0.4), -0.004)], hair, 0.075, hh_c, th=0.32, tip=0.4)
+        for s, side in sides():
+            lock(f"Hair_GreyStreak_{side}", [on_s(Hh, (s, -0.5, 0.05), -0.004), on_s(Hh, (s, -0.1, 0.22), 0.009),
+                                             on_s(Hh, (s * 0.9, 0.45, 0.3), 0.007), on_s(Hh, (s * 0.6, 0.85, 0.3), -0.004)], grey, 0.042,
+                 hh_c, th=0.3, tip=0.45)
+        # goatee and moustache
+        for s, side in sides():
+            p, n = H.at((s * 0.1, -1, -0.32))
+            sph(f"Stache_{side}", p + n * 0.004, (0.048, 0.012, 0.012), hair, rot=facing(n) @ Quaternion((0, 1, 0), s * 0.45))
+            tube(f"Goatee_Side_{side}", [on_s(H, (s * 0.2, -1, -0.38), 0.004), on_s(H, (s * 0.14, -1, -0.55), 0.006),
+                                         on_s(H, (s * 0.04, -1, -0.68), 0.008)], hair, r=0.012, radii=[0.6, 1, 1.2], caps=False)
+        p, n = H.at((0, -0.95, -0.7))
+        sph("Goatee", p + n * 0.006, (0.04, 0.025, 0.04), hair)
+        pts = [on_s(H, d, 0.001) for d in [(-0.09, -1, -0.44), (0, -1, -0.45), (0.09, -1, -0.42)]]
+        tube("Smile", pts, mouth, r=0.0068)
+    with limb("Body"):
+        # crossed sash belts over the tunic, wide waist sash, the Eye of Agamotto
+        for s in (-1, 1):
+            pts = [on_s(C, d, 0.006) for d in [(s * 0.62, -0.75, 0.85), (s * 0.35, -1, 0.3), (-s * 0.05, -1, -0.35), (-s * 0.3, -1, -0.9)]]
+            tube(f"Sash_Belt{s}", pts, sash2, r=0.012, caps=False)
+        shell("Tunic_Collar", None, None, tunic2, [((0, 0, 0.8), (0, 0, 1))], inflate=0.007, srf=C, seg=28, ring=16)
+        ac, an = C.at((0, -1, 0.18))
+        cyl("Amulet_Back", ac + an * 0.008, 0.042, 0.018, gold, rot=aim(an), seg=20)
+        torus("Amulet_Ring", ac + an * 0.018, 0.04, 0.008, gold, rot=aim(an), seg=20)
+        q = aim(an)
+        for s in (-1, 1):
+            sph(f"Amulet_Lid{s}", ac + an * 0.02 + q @ Vector((0, s * 0.024, 0)), (0.034, 0.012, 0.008), gold, rot=q)
+        sph("Amulet_Eye", ac + an * 0.022, (0.022, 0.022, 0.012), gem, rot=q, seg=16, ring=8)
+        torus("Amulet_Chain", (0, 0.0, 0.66), 0.115, 0.005, gold, rot=(math.radians(-38), 0, 0), scale=(1, 0.9, 1), seg=20)
+        # tunic skirt flaps (front & back) below the sash
+        for k, (y, sg) in enumerate(((-0.1, -1), (0.115, 1))):
+            box(f"Tunic_Flap{k}", (0, y, 0.27), (0.17, 0.025, 0.2), tunic, bevel=0.012, rot=(sg * 0.12, 0, 0))
+        torus("Sash_Top", (0, 0.008, 0.48), 0.128, 0.012, sash2, scale=(1, 0.82, 1))
+        torus("Sash_Bot", (0, 0.008, 0.385), 0.14, 0.012, sash2, scale=(1, 0.82, 1))
+        # the cloak's tall flared collar stands behind the head
+        g = []
+        nu, nv = 12, 4
+        for i in range(nv + 1):
+            v = i / nv
+            row = []
+            for j in range(nu + 1):
+                a = math.radians(-120 + 240 * j / nu)
+                r = 0.13 + 0.09 * v + 0.02 * v * math.cos(a * 2)
+                z = 0.68 + 0.27 * v - 0.08 * v * (abs(a) / math.radians(120)) ** 2
+                row.append(Vector((math.sin(a) * r, 0.03 + math.cos(a) * r * 0.95, z)))
+            g.append(row)
+        sheet("Cloak_Collar", g, cloak, thick=0.012)
+        for s in (-1, 1):
+            p, n = C.at((s * 0.6, -0.6, 0.82))
+            cyl(f"Cloak_Clasp{s}", p + n * 0.006, 0.024, 0.012, gold, rot=aim(n), seg=14)
+    with limb("Cape"):
+        g = cape_grid(0.672, 0.05, 0.21, 0.33, 0.12, lambda v: 0.06 * min(1, v * 3.2) + 0.06 * v, folds=3, fold_amp=0.016,
+                      wrap=0.08, hem=0.03, nu=16, nv=10)
+        sheet("Cape", g, cloak, thick=0.014)
+        # gold trim along the hem
+        hem = g[-1]
+        tube("Cape_Hem", [hem[k] + Vector((0, 0.0, 0.012)) for k in range(0, len(hem), max(1, len(hem) // 8))], cloak2, r=0.009,
+             caps=False)
+    for s, side in sides():
+        with limb("Arm" + side):
+            el, wr = P["elbow"][side], P["wrist"][side]
+            for t in (0.25, 0.5):
+                torus(f"Arm_{side}_Wrap{t}", el + (wr - el) * t, P["fore_r"] * 1.02, 0.007, sash2, rot=aim(wr - el), seg=14)
+        with limb("Leg" + side):
+            pass
+    pv = dict(P["pivots"])
+    pv["Cape"] = (0, 0.12, 0.672)
+    return dict(P=P, pivots=pv, backdrop="e0e4ea", target=(0, 0, 0.55), dist=2.35, budget=7500)
 
 
 # ====================================================================== runner
-CHARS = {"spider_man": spider_man, "iron_man": iron_man, "captain_america": captain_america, "thor": thor}
+CHARS = {"spider_man": spider_man, "iron_man": iron_man, "captain_america": captain_america, "thor": thor, "hulk": hulk,
+         "black_widow": black_widow, "hawkeye": hawkeye, "black_panther": black_panther, "doctor_strange": doctor_strange}
 
 
 def export_hero(hid, pivots):
@@ -894,8 +1441,8 @@ def export_hero(hid, pivots):
 def portrait_cam(opts):
     P = opts["P"]
     hc = Vector(P["head_c"])
-    t = opts.get("portrait_target", (0, 0, hc.z - 0.1))
-    cam_at(t, opts.get("portrait_dist", 1.15), opts.get("portrait_yaw", 22), opts.get("portrait_pitch", 6), lens=60)
+    t = opts.get("portrait_target", (0, 0, hc.z - 0.075))
+    cam_at(t, opts.get("portrait_dist", 1.2), opts.get("portrait_yaw", 22), opts.get("portrait_pitch", 6), lens=60)
 
 
 def build(hid, budget=7000):
@@ -911,7 +1458,7 @@ def build(hid, budget=7000):
         studio(backdrop=opts["backdrop"], target=opts["target"], dist=opts["dist"])
         views = []
         for k, (yaw, pitch) in enumerate([(0, 6), (32, 12), (150, 12)]):
-            cam_at(opts["target"], opts["dist"], yaw, pitch)
+            cam_at(opts["target"], min(opts["dist"], 2.0) if k == 2 else opts["dist"], yaw, pitch)
             pth = os.path.join(SCRATCH, f"{hid}_p{k}.png")
             render(pth, 560, samples=16)
             views.append(pth)

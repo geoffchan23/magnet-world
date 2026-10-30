@@ -10,6 +10,9 @@
 # - Nodes Body, Head, ArmL, ArmR, LegL, LegR (+ optional Cape, WingL, WingR): one node each,
 #   origin at its joint, identity rotation/scale (transforms baked).
 # - ArmR ends in an (empty) hand at its lowest point: the game hangs held items there.
+# - Cape (Vision) has its origin at the top of the cape between the shoulders; WingL/WingR (Wasp, Falcon)
+#   have theirs at the wing roots on the back, so the game can sway/flap them.
+# Debug: HERO_SCRATCH=<dir> also renders a turnaround contact sheet; HERO_TRIS=1 lists the heaviest parts.
 import sys, os, math
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import importlib
@@ -166,7 +169,7 @@ def head_shell(name, m, g, center=None, radii=None, seg=32, ring=16, hero=False)
 
 # Torso profile: (z, half-width, half-depth, forward shift). A lathe with a V taper: broad chest,
 # nipped waist, hips; capped at the crotch and the neck.
-TORSO = [(0.282, 0.0, 0.0, 0.0), (0.298, 0.095, 0.08, 0.0), (0.33, 0.138, 0.106, 0.0), (0.37, 0.15, 0.114, 0.0),
+TORSO = [(0.282, 0.0, 0.0, 0.0), (0.298, 0.092, 0.078, 0.0), (0.33, 0.13, 0.1, 0.0), (0.37, 0.142, 0.108, 0.0),
          (0.42, 0.136, 0.104, -0.004), (0.475, 0.146, 0.108, -0.008), (0.535, 0.168, 0.118, -0.012),
          (0.59, 0.18, 0.122, -0.01), (0.632, 0.172, 0.114, -0.004), (0.668, 0.142, 0.094, 0.0),
          (0.693, 0.085, 0.062, 0.0), (0.705, 0.0, 0.0, 0.0)]
@@ -315,14 +318,14 @@ def leg(s, side, m, boot, sole=None, boot_top=0.2, cuff=None, thick=1.0, knee=No
 
 
 def face(skin, black, white, brow_m, mouth_m, blush=None, eye_z=-0.05, eye_w=0.033, eye_h=0.046, grin="smile",
-         brow_tilt=0.0, nose=True):
+         brow_tilt=0.0, nose=True, brow_r=0.0095):
     """Toy face in the npc style: glossy black eyes with shines, brows, a little mouth."""
     for s, side in sides():
         eye(f"Eye_{side}", HC, HR, (s * 0.35, -1, eye_z), eye_w, eye_h, black, white)
         b0 = 0.17 + brow_tilt
         tube(f"Brow_{side}", arc_on(HC, HR, [(s * 0.19, -1, eye_z + b0), (s * 0.34, -1, eye_z + 0.235),
                                                (s * 0.5, -1, eye_z + 0.2 - brow_tilt * 0.5)], lift=0.004),
-             brow_m, r=0.0095, radii=[1.05, 1, 0.65], caps=False)
+             brow_m, r=brow_r, radii=[1.05, 1, 0.65], caps=False)
         if blush:
             decal(f"Blush_{side}", HC, HR, (s * 0.58, -1, eye_z - 0.24), (0.03, 0.007, 0.017), blush)
         sph(f"Ear_{side}", (s * 0.2, 0.012, HC.z - 0.015), (0.03, 0.026, 0.045), skin, seg=10, ring=5)
@@ -410,17 +413,6 @@ def edge_fn(front, side, back, face_half=0.95, soft=0.28, part=0.0):
     return f
 
 
-def emblem_on(name, center, radii, direction, pts, depth, m, out=0.004, spin=0.0):
-    p, n = on(center, radii, direction, out)
-    q = aim(n, spin)
-    # local Y of the prism should point "up": aim() maps +Z to n; twist so +Y ~ world up
-    up = q @ Vector((0, 1, 0))
-    want = (Vector((0, 0, 1)) - n * n.z).normalized()
-    ang = math.atan2(up.cross(want).dot(n), up.dot(want))
-    q = aim(n, spin + ang)
-    return prism(name, pts, depth, m, p + n * depth * 0.5, rot=q)
-
-
 def common():
     black, white = common_mats()
     return black, white
@@ -431,8 +423,8 @@ def captain_marvel():
     reset("CaptainMarvel")
     black, white = common()
     skin = mat("Skin", "f1c2a0", rough=0.45, coat=0.25, sss=0.15)
-    hair = mat("Hair", "f4b83a", rough=0.36, coat=0.45)
-    hair2 = mat("HairShade", "d9ab4f", rough=0.45, coat=0.3)
+    hair = mat("Hair", "e3a22a", rough=0.42, coat=0.3)
+    hair2 = mat("HairShade", "c98a1e", rough=0.45, coat=0.3)
     blue = mat("SuitBlue", "23408f", rough=0.35, coat=0.6)
     navy = mat("SuitNavy", "182a5e", rough=0.4, coat=0.5)
     red = mat("SuitRed", "d3243a", rough=0.32, coat=0.65)
@@ -440,8 +432,8 @@ def captain_marvel():
     brow = mat("Brow", "b98a3c", rough=0.5)
     mouth = mat("Mouth", "a8443e", rough=0.4)
     blush = mat("Blush", "ff9c8c", rough=0.6, coat=0.0)
-    glow = mat("FistGlow", "ffa41c", rough=0.25, coat=0.2, emit="ff8a00", emit_strength=3.5)
-    halo = glass("FistHalo", "ffa020", alpha=0.32, emit="ff8a00", emit_strength=3.0)
+    glow = mat("FistGlow", "ffb21a", rough=0.3, coat=0.0, emit="ff9500", emit_strength=1.8)
+    halo = glass("FistHalo", "ff9a00", alpha=0.4, emit="ff7a00", emit_strength=1.2, rough=0.3)
 
     with limb("Head"):
         sph("Head", HC, HR, skin, seg=28, ring=14, hero=True)
@@ -455,7 +447,7 @@ def captain_marvel():
                 rot=Quaternion((0, 1, 0), s * 0.55), seg=16, ring=8)
 
     with limb("Body"):
-        body_core(blue, navy, blue)
+        body_core(blue, None, blue)
         # red chest yoke over the shoulders + a red centre panel running down to the belt
         yoke = lambda c, s, z: max(z - 0.575 + 0.03 * c * c, min(0.3 - abs(c), -s, z - 0.41))
         panel("Suit_Red", red, yoke)
@@ -506,8 +498,8 @@ def scarlet_witch():
     brow = mat("Brow", "7a2a18", rough=0.5)
     mouth = mat("Mouth", "a83a44", rough=0.4)
     blush = mat("Blush", "ff9a8e", rough=0.6, coat=0.0)
-    glow = mat("ChaosGlow", "ff1a36", rough=0.25, coat=0.2, emit="ff0020", emit_strength=3.0)
-    wisp = glass("ChaosWisp", "ff1a3a", alpha=0.6, emit="ff0028", emit_strength=2.5)
+    glow = mat("ChaosGlow", "ff1a36", rough=0.3, coat=0.0, emit="ff0020", emit_strength=1.6)
+    wisp = glass("ChaosWisp", "ff1a3a", alpha=0.7, emit="ff0028", emit_strength=1.4, rough=0.3)
 
     with limb("Head"):
         sph("Head", HC, HR, skin, seg=28, ring=14, hero=True)
@@ -554,7 +546,7 @@ def scarlet_witch():
             ripple = 0.008 * math.sin(a * 6) * v
             return ((rx + ripple) * math.cos(a), (ry + ripple) * math.sin(a) + 0.01 * v, z)
         sheet("Coat_Skirt", skirt, 28, 5, 0.012, coat)
-        hem = [Vector(skirt(i / 20, 1.0)) for i in range(21)]
+        hem = [Vector(skirt(i / 12, 1.0)) for i in range(13)]
         tube("Coat_Hem", hem, coat2, r=0.009, caps=False)
         # tall collar standing up behind the neck
         sheet("Coat_Collar", lambda u, v: ((0.11 + 0.01 * v) * math.cos(math.radians(200 + 140 * u)),
@@ -589,7 +581,8 @@ def vision():
     cape_in = mat("CapeInside", "b86e00", rough=0.45, coat=0.4)
     silver = mat("Silver", "c9d1da", rough=0.2, metal=0.9, coat=0.3)
     gold = mat("Gold", "e2b13c", rough=0.22, metal=0.85, coat=0.4)
-    gem = mat("MindStone", "ffd400", rough=0.05, coat=1.0, emit="ffc400", emit_strength=4.0)
+    gem = mat("MindStone", "ffc800", rough=0.05, coat=1.0, emit="ffb800", emit_strength=1.6)
+    gem_core = mat("MindStoneCore", "fff2a0", rough=0.1, coat=0.5, emit="ffe060", emit_strength=4.0)
     mouth = mat("Mouth", "6e0f1c", rough=0.4)
 
     with limb("Head"):
@@ -608,6 +601,7 @@ def vision():
         prism("MindStone_Setting", [(0, 0.062), (0.047, 0), (0, -0.052), (-0.047, 0)], 0.012, silver, p + n * 0.004, rot=q)
         prism("MindStone", [(0, 0.046), (0.033, 0), (0, -0.038), (-0.033, 0)], 0.018, gem, p + n * 0.013, rot=q,
               bevel=0.006)
+        sph("MindStone_Core", p + n * 0.024, (0.012, 0.016, 0.004), gem_core, rot=q, seg=10, ring=4)
 
     with limb("Body"):
         body_core(green, None, skin)
@@ -740,7 +734,7 @@ def ant_man():
             tube(f"Leg_{side}_Stripe", [(s * 0.14, 0, 0.32), (s * 0.143, 0, 0.24)], dark, r=0.012, caps=False)
             sph(f"Leg_{side}_Knee", (s * 0.09, -0.047, 0.215), (0.04, 0.02, 0.036), silver, seg=12, ring=6)
 
-    return dict(backdrop="f2e0dc", pivots=pivots(), target=(0, 0, 0.57), dist=2.6)
+    return dict(backdrop="f2e0dc", pivots=pivots(), target=(0, 0, 0.57), dist=2.6, ptarget=(0, 0, 0.86), pdist=1.75)
 
 
 # ====================================================================== 5. Wasp
@@ -749,7 +743,7 @@ def wasp():
     black, white = common()
     skin = mat("Skin", "f0c4a2", rough=0.45, coat=0.25, sss=0.15)
     hair = mat("Hair", "2a2226", rough=0.35, coat=0.45)
-    yel = mat("SuitYellow", "ffbf00", rough=0.3, coat=0.7)
+    yel = mat("SuitYellow", "ffcc00", rough=0.28, coat=0.6)
     blk = mat("SuitBlack", "1f2026", rough=0.35, coat=0.6)
     gold = mat("Gold", "e7a51c", rough=0.22, metal=0.8, coat=0.4)
     brow = mat("Brow", "2a2226", rough=0.5)
@@ -800,16 +794,16 @@ def wasp():
                 d = Vector((s * math.cos(a), 0.22, math.sin(a))).normalized()
                 cen = root + d * (ln * 0.95) + Vector((0, back, 0))
                 q = orient(d, (0, 1, 0))
-                sph(f"Wing_{side}{k}", cen, (wd, ln, 0.004), wing, rot=q, seg=28, ring=12)
+                sph(f"Wing_{side}{k}", cen, (wd, ln, 0.004), wing, rot=q, seg=20, ring=10)
                 # gold rim + veins
                 rim = [cen + q @ Vector((math.sin(t) * wd * 0.97, math.cos(t) * ln * 0.97, 0))
-                       for t in [i * 2 * math.pi / 20 for i in range(21)]]
-                tube(f"Wing_{side}{k}_Rim", rim, vein, r=0.0032, caps=False, res=1)
+                       for t in [i * 2 * math.pi / 12 for i in range(13)]]
+                toykit.tube(f"Wing_{side}{k}_Rim", rim, vein, radius=0.0032, caps=False, res=1, bevel_res=0)
                 tube(f"Wing_{side}{k}_Vein", [root + Vector((0, back * 0.4, 0)), cen - d * ln * 0.3, cen + d * ln * 0.8],
                      vein, r=0.0035, caps=False)
                 for j in (-1, 1):
-                    tube(f"Wing_{side}{k}_Vein{j}", [cen - d * ln * 0.2, cen + q @ Vector((j * wd * 0.55, ln * 0.45, 0))],
-                         vein, r=0.0025, caps=False)
+                    toykit.tube(f"Wing_{side}{k}_Vein{j}", [cen - d * ln * 0.2, cen + q @ Vector((j * wd * 0.55, ln * 0.45, 0))],
+                                vein, radius=0.0025, caps=False, res=2, bevel_res=0)
             sph(f"Wing_{side}_Root", root + Vector((0, 0.01, 0)), (0.018, 0.016, 0.018), vein, seg=10, ring=5)
         with limb("Arm" + side):
             hc, el, wr = arm(s, side, yel, blk, blk, cuff=gold, shoulder=blk)
@@ -821,7 +815,7 @@ def wasp():
             tube(f"Leg_{side}_Stripe", [(s * 0.14, -0.005, 0.33), (s * 0.143, -0.003, 0.25)], yel, r=0.011, caps=False)
 
     return dict(backdrop="f4ecd2", pivots=pivots(WingL=(-0.035, 0.145, 0.59), WingR=(0.035, 0.145, 0.59)),
-                target=(0, 0, 0.57), dist=2.6)
+                target=(0, 0, 0.57), dist=2.6, ptarget=(0, 0, 0.86), pdist=1.75)
 
 
 # ====================================================================== 6. Falcon
@@ -833,8 +827,8 @@ def falcon():
     grey = mat("SuitGrey", "7f8792", rough=0.4, coat=0.45)
     dark = mat("SuitDark", "373c45", rough=0.42, coat=0.45)
     red = mat("SuitRed", "cf2b30", rough=0.32, coat=0.65)
-    metal = mat("WingMetal", "9aa4b0", rough=0.22, metal=0.9, coat=0.35)
-    metal2 = mat("WingMetalDark", "5b6470", rough=0.25, metal=0.85, coat=0.35)
+    metal = mat("WingMetal", "c3cbd4", rough=0.24, metal=0.6, coat=0.6)
+    metal2 = mat("WingMetalDark", "8b94a0", rough=0.26, metal=0.55, coat=0.55)
     silver = mat("Silver", "d0d7df", rough=0.18, metal=0.9, coat=0.4)
     goggle = mat("GoggleLens", "ff3a3a", rough=0.04, coat=1.0, emit="ff1a1a", emit_strength=0.9)
     frame = mat("GoggleFrame", "2a2d33", rough=0.3, coat=0.6)
@@ -853,8 +847,8 @@ def falcon():
             p, n = on(HC, HR, (s * 0.35, -1, 0.02), 0.0)
             q = orient((0, 0, 1), n)
             q = q @ Quaternion((0, 0, 1), -s * 0.12)
-            sph(f"Goggle_{side}_Frame", p + n * 0.004, (0.074, 0.06, 0.026), frame, rot=q, seg=20, ring=8)
-            sph(f"Goggle_{side}", p + n * 0.016, (0.064, 0.05, 0.02), goggle, rot=q, seg=20, ring=8)
+            sph(f"Goggle_{side}_Frame", p + n * 0.004, (0.074, 0.06, 0.026), frame, rot=q, seg=18, ring=6)
+            sph(f"Goggle_{side}", p + n * 0.016, (0.064, 0.05, 0.02), goggle, rot=q, seg=18, ring=6)
             sph(f"Goggle_{side}_Glint", p + n * 0.033 + q @ Vector((-s * 0.022, 0.018, 0.0)), (0.016, 0.01, 0.003), glint,
                 rot=q, seg=8, ring=4)
         tube("Goggle_Strap", arc_on(HC, (0.21, 0.198, 0.2), [(-0.62, -0.75, 0.05), (-1, 0, 0.05), (-0.6, 0.8, 0.05),
@@ -896,32 +890,36 @@ def falcon():
 
     for s, side in sides():
         with limb("Wing" + side):
-            # folded wing: a spar rising from the pack, metal feathers hanging from it
-            root = Vector((s * 0.085, 0.2, 0.61))
-            wrist = Vector((s * 0.2, 0.235, 0.77))
-            tube(f"Wing_{side}_Spar", [root, root + Vector((s * 0.06, 0.02, 0.1)), wrist], metal2, r=0.022,
-                 radii=[1.0, 0.9, 0.75], br=2)
-            tube(f"Wing_{side}_Edge", [root + Vector((s * 0.01, -0.01, 0.03)), wrist + Vector((0, -0.012, 0.012))],
-                 red, r=0.01, caps=False)
-            for k in range(5):
-                t = k / 4
-                top = root.lerp(wrist, 0.15 + 0.85 * t) + Vector((0, 0.012 * k, 0))
-                ln = 0.34 + 0.12 * t
-                d = Vector((s * (0.12 + 0.28 * t), 0.05, -1)).normalized()
-                w = 0.06
-                pts = [(-w / 2, 0), (w / 2, 0), (w / 2, ln * 0.82), (0, ln), (-w / 2, ln * 0.82)]
-                prism(f"Wing_{side}_Feather{k}", pts, 0.012, metal if k % 2 == 0 else metal2,
-                      top + Vector((0, 0.008 * k, 0)), rot=orient(d, (s * 0.25, 1, 0)))
-                if k == 4:
-                    prism(f"Wing_{side}_Tip", [(-w / 2, 0), (w / 2, 0), (0, 0.07)], 0.014, red,
-                          top + d * (ln - 0.075) + Vector((0, 0.006 * k + 0.004, 0)), rot=orient(d, (s * 0.25, 1, 0)))
+            # folded wing: a broad bevelled metal blade with a serrated feather hem, a lighter covert plate
+            # over its top, a red leading edge; it stands up past the shoulder and hangs to the knees
+            root = Vector((s * 0.075, 0.205, 0.6))
+            q = Quaternion((0, 1, 0), -s * 0.2) @ orient((0, 0, 1), (s * 0.28, 1, 0))  # local X = -X*s, Y = up, Z = back
+            m2w = lambda x, z, dy=0.0: root + q @ Vector((-s * x * 1.18, z * 1.08, dy))
+            blade = [(0, 0), (0.05, 0.11), (0.115, 0.175), (0.16, 0.16), (0.195, 0.05), (0.215, -0.15),
+                     (0.2, -0.36), (0.175, -0.29), (0.155, -0.39), (0.13, -0.31), (0.105, -0.37), (0.08, -0.28),
+                     (0.055, -0.31), (0.035, -0.17), (0.0, -0.06)]
+            blade = [(x * 1.18, z * 1.08) for x, z in blade]
+            prism(f"Wing_{side}_Blade", [(-s * x, z) for x, z in (blade if s < 0 else blade[::-1])], 0.016, metal2,
+                  root, rot=q, bevel=0.005)
+            covert = [(0.012, 0.0), (0.055, 0.1), (0.115, 0.155), (0.152, 0.142), (0.18, 0.04), (0.19, -0.1),
+                      (0.15, -0.06), (0.11, -0.12), (0.07, -0.06), (0.03, -0.08)]
+            covert = [(x * 1.18, z * 1.08) for x, z in covert]
+            prism(f"Wing_{side}_Covert", [(-s * x, z) for x, z in (covert if s < 0 else covert[::-1])], 0.012, metal,
+                  m2w(0, 0, 0.012), rot=q, bevel=0.004)
+            tube(f"Wing_{side}_Edge", [m2w(0.0, 0.0, 0.006), m2w(0.05, 0.112, 0.006), m2w(0.115, 0.178, 0.006),
+                                       m2w(0.162, 0.16, 0.006)], red, r=0.009)
+            for k, (x0, x1) in enumerate([(0.06, 0.075), (0.11, 0.125), (0.16, 0.172)]):  # feather grooves
+                tube(f"Wing_{side}_Groove{k}", [m2w(x0, -0.12, 0.01), m2w(x1, -0.27 - 0.02 * k, 0.01)], metal,
+                     r=0.0045, caps=False)
+            cyl(f"Wing_{side}_Hinge", root + Vector((0, -0.005, 0)), 0.026, 0.03, metal, rot=aim(q @ Vector((0, 0, 1))),
+                seg=14)
         with limb("Arm" + side):
             arm(s, side, grey, grey, dark, cuff=red, shoulder=dark)
             tube(f"Arm_{side}_Stripe", [(s * 0.214, -0.036, 0.6), (s * 0.232, -0.046, 0.52)], red, r=0.01, caps=False)
         with limb("Leg" + side):
             leg(s, side, dark, frame, frame, boot_top=0.2, cuff=red, knee=grey)
 
-    return dict(backdrop="e3e7ee", pivots=pivots(WingL=(-0.085, 0.2, 0.61), WingR=(0.085, 0.2, 0.61)),
+    return dict(backdrop="e3e7ee", pivots=pivots(WingL=(-0.075, 0.205, 0.6), WingR=(0.075, 0.205, 0.6)),
                 target=(0, 0, 0.57), dist=2.6)
 
 
@@ -978,10 +976,9 @@ def war_machine():
         rc = Vector((0, -ry + dy - 0.012, 0.585))
         cyl("Reactor_Ring", rc, 0.04, 0.02, dark, rot=aim((0, -1, 0.12)), seg=22)
         cyl("Reactor", rc + Vector((0, -0.008, 0)), 0.028, 0.012, reactor, rot=aim((0, -1, 0.12)), seg=20)
-        for row, z in enumerate((0.475, 0.43)):
+        for row, z in enumerate((0.485, 0.44)):
             rx, ry, dy = torso_at(z, WM)
-            for k in (-1, 1):
-                box(f"Abs{row}{k}", (k * 0.03, -ry + dy - 0.002, z), (0.05, 0.016, 0.036), silver, bevel=0.008)
+            box(f"Abs{row}", (0, -ry + dy + 0.004, z), (0.12 - 0.015 * row, 0.02, 0.03), silver, bevel=0.009)
         band("Belt", 0.392, dark, minor=0.02, prof=WM)
         # shoulder-mounted rotary cannon over the right shoulder
         gc = Vector((0.285, 0.02, 0.785))
@@ -1023,8 +1020,8 @@ def winter_soldier():
     reset("WinterSoldier")
     black, white = common()
     skin = mat("Skin", "eec2a2", rough=0.45, coat=0.25, sss=0.15)
-    hair = mat("Hair", "5a3a26", rough=0.45, coat=0.3)
-    hair2 = mat("HairShade", "45291a", rough=0.5, coat=0.25)
+    hair = mat("Hair", "4e3222", rough=0.45, coat=0.3)
+    hair2 = mat("HairShade", "3c2416", rough=0.5, coat=0.25)
     jacket = mat("Jacket", "262a31", rough=0.4, coat=0.45)
     vest = mat("Vest", "353b44", rough=0.42, coat=0.4)
     strap = mat("Strap", "1a1b1f", rough=0.4, coat=0.5)
@@ -1036,18 +1033,32 @@ def winter_soldier():
     red = mat("Star", "d4202e", rough=0.3, coat=0.7)
     brow = mat("Brow", "45291a", rough=0.5)
     mouth = mat("Mouth", "8a3a34", rough=0.4)
-    
+    mask = mat("Mask", "1e2026", rough=0.45, coat=0.4)
+    paint = mat("EyePaint", "3b3134", rough=0.7, coat=0.0)
+
     with limb("Head"):
         sph("Head", HC, HR, skin, seg=28, ring=14, hero=True)
-        face(skin, black, white, brow, mouth, None, grin="firm", brow_tilt=-0.04)
+        face(skin, black, white, brow, mouth, None, grin="none", brow_tilt=-0.06, brow_r=0.012)
+        # the Winter Soldier muzzle mask over the lower face, and a smear of dark eye paint
+        mr = (HR[0] * 1.045, HR[1] * 1.06, HR[2] * 1.03)
+        head_shell("Mask", mask, lambda d: min(-0.27 + 0.16 * abs(d.x) - d.z, -d.y + 0.25 - 0.4 * max(0.0, d.z + 0.5),
+                                             d.z + 0.88), HC + Vector((0, -0.004, -0.004)), mr, seg=36, ring=18)
+        tube("Mask_Strap", arc_on(HC, (0.212, 0.2, 0.205), [(-1, -0.2, -0.35), (-0.75, 0.6, -0.15), (0, 1, -0.05),
+                                                             (0.75, 0.6, -0.15), (1, -0.2, -0.35)], lift=0.004),
+             mask, r=0.011, caps=False)
+        for k in (-1, 1):
+            p, n = on(HC, mr, (k * 0.2, -1, -0.5), 0.0)
+            cyl(f"Mask_Vent{k}", p, 0.02, 0.012, paint, rot=aim(n), seg=12, bevel=0.003)
+
         # shoulder-length messy hair, centre-ish parting
         hair_shell("Hair", hair, edge_fn(0.52, -1.0, -1.25, face_half=0.86, soft=0.2, part=0.05),
                    bumps=[((0, 0.2, 1), 0.015, 0.5), ((1, 0.1, -0.5), 0.03, 0.45), ((-1, 0.1, -0.5), 0.03, 0.45),
                           ((0, 1, -0.6), 0.03, 0.6), ((-0.4, -0.85, 0.55), 0.018, 0.25, (0.006, 0, -0.006)),
                           ((0.4, -0.85, 0.55), 0.018, 0.25, (-0.006, 0, -0.006))])
         for s, side in sides():
-            tube(f"Hair_Lock_{side}", [(s * 0.17, -0.03, 0.83), (s * 0.2, -0.03, 0.74), (s * 0.2, -0.02, 0.68)],
-                 hair2 if s < 0 else hair, r=0.034, radii=[1.0, 1.0, 0.55], br=2)
+            tube(f"Hair_Lock_{side}", [(s * 0.17, -0.03, 0.83), (s * 0.205, -0.03, 0.74), (s * 0.215, -0.01, 0.66)],
+                 hair2 if s < 0 else hair, r=0.036, radii=[1.0, 1.0, 0.5], br=2)
+
         blob("Hair_Back", (0, 0.1, 0.72), (0.18, 0.08, 0.13), hair, [((0, 0.4, -1), 0.02, 0.6)], seg=20, ring=10,
              hero=False)
 
@@ -1078,8 +1089,8 @@ def winter_soldier():
         for k in range(3):  # overlapping shoulder plates
             hsph(f"Arm_L_Plate{k}", (-0.205, 0, 0.64 - 0.03 * k), (0.07 - 0.004 * k, 0.068 - 0.004 * k, 0.05),
                  metal if k % 2 == 0 else metal2, rot=Quaternion((0, 1, 0), -0.55), seg=18, ring=8)
-        p = Vector((-0.258, -0.004, 0.618))
-        prism("Arm_L_Star", star_pts(5, 0.04, 0.017), 0.01, red, p, rot=orient((0.2, 0, 1), (-1, -0.2, 0.3)))
+        p = Vector((-0.262, -0.016, 0.548))
+        prism("Arm_L_Star", star_pts(5, 0.032, 0.0135), 0.012, red, p, rot=orient((0.12, 0, 1), (-1, -0.35, 0.05)))
     with limb("ArmR"):
         arm(1, "R", jacket, jacket, strap, cuff=strap, shoulder=jacket)
         tube("Arm_R_Strap", [(0.205, -0.04, 0.6), (0.225, -0.035, 0.56)], strap, r=0.008, caps=False)
@@ -1173,6 +1184,12 @@ def build(name, budget=7500):
             print(f"WARNING {name} over budget at the detail floor")
             break
         npc_kit.DETAIL[0] = max(0.45, npc_kit.DETAIL[0] * (opts.get("budget", budget) / total) ** 1.2 * 0.97)
+    if os.environ.get("HERO_TRIS"):
+        rows = []
+        for o in mesh_objs():
+            o.data.calc_loop_triangles()
+            rows.append((len(o.data.loop_triangles), o.name))
+        print("TOP", sorted(rows, reverse=True)[:18])
     bake_transforms()
     tris = tri_report()
     lo, hi = height()

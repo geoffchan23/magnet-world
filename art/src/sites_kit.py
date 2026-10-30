@@ -33,7 +33,7 @@ MAT_DEFS = {
     "ConcreteDark":    ((0.42, 0.43, 0.47, 1), 0.9, 0.0),
     "ConcreteRock":    ((0.62, 0.58, 0.55, 1), 0.95, 0.0),
     "ConcreteTemple":  ((0.72, 0.72, 0.62, 1), 0.95, 0.0),
-    "ConcreteVormir":  ((0.5, 0.45, 0.62, 1), 0.95, 0.0),
+    "ConcreteVormir":  ((0.34, 0.32, 0.52, 1), 0.95, 0.0),
     "Brick":           ((0.78, 0.5, 0.42, 1), 0.9, 0.0),
     "PlasterSanctum":  ((0.62, 0.36, 0.28, 1), 0.9, 0.0),
     "PlasterCeiling":  ((0.86, 0.8, 0.68, 1), 0.9, 0.0),
@@ -55,7 +55,7 @@ MAT_DEFS = {
     "Cloak":           ((0.6, 0.05, 0.04, 1), 0.85, 0.0),
     "Candle":          ((0.95, 0.9, 0.78, 1), 0.7, 0.0),
     "GlassCase":       ((0.7, 0.85, 0.9, 1), 0.05, 0.0, None, 0.0, 0.22),
-    "GlowRed":         ((1.0, 0.1, 0.05, 1), 0.4, 0.0, (1.0, 0.06, 0.02), 6.0),
+    "GlowRed":         ((1.0, 0.1, 0.05, 1), 0.4, 0.0, (1.0, 0.03, 0.01), 3.5),
     "GlowCyan":        ((0.4, 0.85, 1.0, 1), 0.4, 0.0, (0.25, 0.75, 1.0), 6.0),
     "GlowAmber":       ((1.0, 0.7, 0.3, 1), 0.4, 0.0, (1.0, 0.55, 0.15), 5.0),
     "GlowEmber":       ((1.0, 0.35, 0.1, 1), 0.6, 0.0, (1.0, 0.28, 0.05), 3.0),
@@ -158,6 +158,18 @@ def t_rock(rng, sx, sy, sz, sub=1, seed=None, rough=0.28, flat_bottom=True):
         if flat_bottom:
             p.z = max(p.z, -0.25)
         v.co = Vector((p.x * sx, p.y * sy, p.z * sz))
+    for f in bm.faces:
+        f.smooth = False
+    return bm
+
+
+def t_hull(pts):
+    bm = bmesh.new()
+    vs = [bm.verts.new(Vector(p)) for p in pts]
+    res = bmesh.ops.convex_hull(bm, input=vs)
+    dead = list({v for v in res["geom_interior"] + res["geom_unused"] if isinstance(v, bmesh.types.BMVert)})
+    if dead:
+        bmesh.ops.delete(bm, geom=dead, context="VERTS")
     for f in bm.faces:
         f.smooth = False
     return bm
@@ -377,6 +389,26 @@ def ultron_tower():
     P.box(-0.02, -2.0, 0.05, 0.02, -1.98, 1.25, "GlowRed")
     for z in (0.35, 0.7, 1.05):
         P.box(-0.55, -2.0, z, 0.55, -1.985, z + 0.04, "MetalDark", 1.5)
+    # broken concrete parapet remains along the back and right roof edges (outside the clear centre)
+    def chunk(u0, u1, h0, h1, side):
+        if side == "back":
+            q = [(u0, 1.66), (u1, 1.66), (u1, 1.97), (u0, 1.97)]
+            ends = [h0, h1, h1, h0]
+        else:
+            q = [(1.66, u0), (1.97, u0), (1.97, u1), (1.66, u1)]
+            ends = [h0, h0, h1, h1]
+        pts = [(x, y, TOP) for x, y in q] + [(x, y, TOP + e) for (x, y), e in zip(q, ends)]
+        P.add(t_hull(pts), None, "ConcreteDark", rng.uniform(0.7, 0.9))
+        C.hull(pts)
+        tip = max(range(4), key=lambda i: ends[i])
+        ck.rebar_spray(P, rng, (q[tip][0], q[tip][1], TOP + ends[tip] - 0.05), (0, 0, 1), 2, (0.12, 0.3), 0.08,
+                       droop=0.2)
+    chunk(-1.1, -0.45, 0.75, 0.35, "back")
+    chunk(-0.4, 0.5, 0.3, 0.12, "back")
+    chunk(0.7, 1.4, 0.2, 0.55, "back")
+    chunk(-1.6, -0.9, 0.5, 0.8, "right")
+    chunk(-0.8, 0.2, 0.42, 0.15, "right")
+    chunk(0.5, 1.3, 0.1, 0.38, "right")
     # roof: rubble at the corners (centre 2x2 clear), broken antenna mast, vent box
     for cx, cy in ((-1.35, -1.4), (1.4, -1.3), (-1.45, 1.35), (1.3, 1.45)):
         ck.rubble_chunks(P, rng, cx, cy, 0.42, 7, z=TOP, mats=("ConcreteDark", "ConcreteDark", "MetalDark"),
@@ -1296,36 +1328,50 @@ def vormir_spire():
         return v
     P = SPiece("VormirSpire", grime=g)
     C = Cols("VormirSpire")
-    seg = 14
+    seg = 22
     off = Vector((11.3, 2.7, 5.1))
-    prof = [(0.0, 1.75, 0.28), (0.4, 1.62, 0.25), (1.2, 1.5, 0.22), (2.0, 1.42, 0.2), (2.8, 1.38, 0.18),
-            (3.6, 1.36, 0.18), (4.4, 1.38, 0.18), (5.2, 1.42, 0.17), (6.0, 1.5, 0.14), (6.6, 1.6, 0.1),
-            (6.88, 1.62, 0.05), (SPIRE_TOP, 1.58, 0.0)]
+    prof = [(0.0, 1.62, 0.3), (0.5, 1.55, 0.26), (1.3, 1.48, 0.24), (2.1, 1.44, 0.22), (2.9, 1.41, 0.2),
+            (3.7, 1.39, 0.2), (4.5, 1.4, 0.2), (5.3, 1.43, 0.18), (6.0, 1.5, 0.15), (6.55, 1.58, 0.12),
+            (6.85, 1.64, 0.06), (SPIRE_TOP, 1.6, 0.0)]
     rings = []
     for z, r, amp in prof:
         ring = []
         for i in range(seg):
             a = 2 * math.pi * i / seg
             d = Vector((math.cos(a), math.sin(a), 0))
-            rr = r + amp * (noise.noise(d * 1.6 + off + Vector((0, 0, z * 0.9))) * 1.3 +
-                            0.4 * noise.noise(d * 4 + off + Vector((0, 0, z * 2.5))))
-            if z >= SPIRE_TOP - 0.15:
+            # basalt-like vertical ridges: sharp, mostly coherent up the height
+            ridge = 1 - abs(noise.noise(d * 2.4 + off + Vector((0, 0, z * 0.25))))
+            rr = r + amp * (1.6 * ridge - 0.9 + 0.35 * noise.noise(d * 5 + off + Vector((0, 0, z * 2.0))))
+            if i % 2:
+                rr -= amp * 0.5
+            if z >= SPIRE_TOP - 0.2:
                 # keep a full 2x2 flat top inside the rim
                 rr = max(rr, 1.5 / max(abs(d.x), abs(d.y), 0.72) * 0.98, 1.48)
             ring.append(Vector((d.x * rr, d.y * rr, z)))
         rings.append(ring)
     P.add(t_loft(rings, True, True), None, "ConcreteVormir")
-    # vertical cracks / fins for a sheer, faceted cliff look
-    for i in range(9):
-        a = rng.uniform(0, 2 * math.pi)
+    # sheer vertical fins / flakes all round
+    for i in range(16):
+        a = 2 * math.pi * i / 16 + rng.uniform(-0.1, 0.1)
         d = Vector((math.cos(a), math.sin(a), 0))
-        z0 = rng.uniform(0.0, 3.5)
-        z1 = min(SPIRE_TOP - 0.4, z0 + rng.uniform(1.5, 3.0))
-        r = 1.36
-        P.add(t_prism([(d.x * (r - 0.1) - d.y * 0.18, d.y * (r - 0.1) + d.x * 0.18, z0),
-                       (d.x * (r + 0.12), d.y * (r + 0.12), z0 + 0.3),
-                       (d.x * (r - 0.1) + d.y * 0.18, d.y * (r - 0.1) - d.x * 0.18, z0)], (0, 0, z1 - z0)),
-              None, "ConcreteVormir", 0.75)
+        t = Vector((-d.y, d.x, 0))
+        z0 = rng.uniform(0.0, 2.5)
+        z1 = min(SPIRE_TOP - 0.25, z0 + rng.uniform(2.5, 5.0))
+        r = 1.22
+        w = rng.uniform(0.15, 0.28)
+        o = rng.uniform(0.18, 0.3)
+        base = [d * r - t * w, d * (r + o) + t * w * 0.2, d * r + t * w]
+        top = [d * (r - 0.05) - t * w * 0.5, d * (r + o * 0.5), d * (r - 0.05) + t * w * 0.5]
+        P.add(t_loft([[p + Vector((0, 0, z0)) for p in base], [p + Vector((0, 0, z1)) for p in top]], True, True),
+              None, "ConcreteVormir", rng.uniform(0.6, 0.85))
+    # jagged crown spikes on the outer rim (outside the clear 2x2 top)
+    for i in range(9):
+        a = 2 * math.pi * i / 9 + rng.uniform(-0.15, 0.15)
+        d = Vector((math.cos(a), math.sin(a), 0))
+        rr = 1.5 / max(abs(d.x), abs(d.y), 0.72) * 0.98 + 0.05
+        h = rng.uniform(0.15, 0.45)
+        P.add(t_bar(d * rr + Vector((0, 0, SPIRE_TOP - 0.3)), d * (rr + 0.05) + Vector((0, 0, SPIRE_TOP + h)),
+                    rng.uniform(0.1, 0.16), 0.02, sides=4, smooth=False), None, "ConcreteVormir", 0.7)
     # ledges: flat tops at 2.5 (-X) and 4.5 (+X), ~1 m out from the cliff face
     def ledge(sx, h):
         x_in, x_out = sx * 1.1, sx * 2.45
@@ -1333,8 +1379,9 @@ def vormir_spire():
         if sx < 0:
             top = top[::-1]
         bot = [(x * 0.8 if abs(x) > 1.5 else x, y * 0.6) for x, y in top]
-        rings_l = [[Vector((x, y, h - 0.75)) for x, y in [(sx * 1.2, yy * 0.4) for _, yy in top]],
-                   [Vector((x, y, h - 0.3)) for x, y in bot],
+        rings_l = [[Vector((x, y, h - 1.3)) for x, y in [(sx * 1.1, yy * 0.4) for _, yy in top]],
+                   [Vector((x, y, h - 0.45)) for x, y in bot],
+                   [Vector((x * 1.02, y * 1.04, h - 0.12)) for x, y in top],
                    [Vector((x, y, h)) for x, y in top]]
         P.add(t_loft(rings_l, True, True), None, "ConcreteVormir", 0.9)
         for i in range(3):
@@ -1342,7 +1389,7 @@ def vormir_spire():
             P.add(t_rock(rng, s * 1.3, s, s * 0.7), TR((sx * rng.uniform(2.0, 2.3), rng.uniform(-0.4, 0.4), h)),
                   "ConcreteVormir", 0.7)
         x0, x1 = sorted((sx * 1.2, sx * 2.45))
-        C.box(x0, -0.6, h - 0.3, x1, 0.6, h)
+        C.box(x0, -0.6, h - 0.45, x1, 0.6, h)
     ledge(-1, 2.5)
     ledge(1, 4.5)
     # summit: a few loose stones at the rim, the middle stays clear
@@ -1365,8 +1412,8 @@ def vormir_spire():
             pts.append((r0 * math.cos(a), r0 * math.sin(a), z0))
             pts.append((r1 * math.cos(a), r1 * math.sin(a), z1))
         return C.hull(pts)
-    frustum(0.0, 2.5, 1.7, 1.42)
-    frustum(2.5, 4.5, 1.42, 1.4)
+    frustum(0.0, 2.5, 1.62, 1.44)
+    frustum(2.5, 4.5, 1.44, 1.4)
     frustum(4.5, SPIRE_TOP, 1.4, 1.58)
     ob = P.finish()
     C.attach(ob)
@@ -1611,20 +1658,20 @@ def preview(tops, mode, path):
     for o in all_objs(tops):
         o.hide_render = True
     if mode == "lineup":
-        place_tree(by["GooPoolRim"], (-22, 6, 0))
-        place_tree(by["GooIsland"], (-22, 6, 0))
-        goo_disc((-22, 6), 7.05)
-        place_tree(by["Sanctum"], (-3, 10, 0))
-        place_tree(by["VaultWalls"], (13, 8, 0))
-        place_tree(by["UltronTower"], (26, 4, 0))
-        place_tree(by["VormirSpire"], (34, 6, 0))
-        place_tree(by["HoverPlatform"], (27.5, -6.5, 4.0))
-        place_tree(by["Turret"], (20.5, -6.5, 0), 0.5)
-        place_tree(by["ForceFieldPylon"], (17.5, -6.0, 0))
-        place_tree(by["ForceFieldPylon"], (23.5, -6.0, 0))
-        hero((10.5, -3.0, 0))
-        hero((26.0, 1.2, 3.0))
-        camera(scn, (6, -42, 22), (6, 4, 1.5), 28)
+        place_tree(by["GooPoolRim"], (-17, 14, 0))
+        place_tree(by["GooIsland"], (-17, 14, 0))
+        goo_disc((-17, 14), 7.05)
+        place_tree(by["Sanctum"], (0, 16, 0), -0.25)
+        place_tree(by["VaultWalls"], (15, 15, 0), 0.25)
+        place_tree(by["UltronTower"], (-5, 1, 0), 0.35)
+        place_tree(by["VormirSpire"], (12, 1, 0))
+        place_tree(by["HoverPlatform"], (3.5, 0, 4.0), 0.3)
+        place_tree(by["Turret"], (2.5, -6.0, 0), 0.6)
+        place_tree(by["ForceFieldPylon"], (0.5, -6.5, 0))
+        place_tree(by["ForceFieldPylon"], (4.5, -6.5, 0))
+        hero((3.6, -6.8, 0))
+        hero((-5.2, -1.6, 3.0))
+        camera(scn, (1, -17, 8.0), (2, 7, 2.8), 19)
     elif mode == "interior":
         place_tree(by["Sanctum"], (0, 0, 0))
         hero((-4.7, 0.4, LAND_Z))

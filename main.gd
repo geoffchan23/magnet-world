@@ -242,8 +242,8 @@ func _ready() -> void:
 			player.global_position = c + Vector3(0, 0.5, 13.0)
 			cam_target = player.global_position
 			cam_yaw = 0.0
-			cam_pitch = 0.35
-			cam_dist = 14.0
+			cam_pitch = 0.55
+			cam_dist = 20.0
 		elif a.begins_with("--grab="):
 			# Testing: put the player right on a stone (comma-separated list).
 			set_play(true)
@@ -256,6 +256,14 @@ func _ready() -> void:
 		elif a.begins_with("--mouse="):
 			var m := a.substr(8).split_floats(",")
 			get_viewport().warp_mouse.call_deferred(Vector2(m[0], m[1]))
+		elif a.begins_with("--look="):
+			# Testing: a bird's-eye view of a stone site (build mode, not moving).
+			var c: Vector3 = stones.sites[a.substr(7)].centre
+			cam_target = c + Vector3(0, 2.5, 0)
+			build_centre = c
+			cam_yaw = 0.5
+			cam_pitch = 0.5
+			cam_dist = 26.0
 		elif a == "--drive":
 			set_play(true)
 			enter_buggy(buggy)

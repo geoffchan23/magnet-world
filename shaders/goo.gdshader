@@ -14,10 +14,10 @@ void fragment() {
 	float t = TIME * 0.25;
 	float n = noise(p + vec2(t, -t * 0.7)) * 0.6 + noise(p * 2.3 - vec2(t * 1.3, t)) * 0.4;
 	float veins = smoothstep(0.45, 0.5, n) - smoothstep(0.5, 0.58, n);
-	vec3 deep = vec3(0.35, 0.02, 0.06);
+	vec3 deep = vec3(0.22, 0.0, 0.03);
 	vec3 hot = vec3(1.0, 0.18, 0.22);
-	ALBEDO = mix(deep, hot, n * 0.6);
-	EMISSION = hot * (0.35 + veins * 1.8 + n * 0.3);
+	ALBEDO = mix(deep, hot, n * n * 0.5);
+	EMISSION = hot * (0.12 + veins * 0.9 + n * 0.1);
 	ROUGHNESS = 0.15;
 	SPECULAR = 0.8;
 }

@@ -42,7 +42,7 @@ const STONES := {
 # Where the stone sits on each site, from the middle of the block (pavement top).
 const SPOT := {
 	"tower": Vector3(0, 6.0, 0), "float": Vector3(0, 5.0, 0), "pool": Vector3(0, 0.35, 0),
-	"vault": Vector3(0, 0.4, -3.0), "sanctum": Vector3(2.0, 4.0, -5.0), "vormir": Vector3(0, 7.0, 0),
+	"vault": Vector3(0, 0.4, -2.4), "sanctum": Vector3(0.5, 4.0, -4.6), "vormir": Vector3(0, 7.0, 0),
 }
 const SITE_NAMES := {
 	"tower": "Ultron's Tower", "float": "the Chitauri Platform", "pool": "the Goo Pool",
@@ -137,6 +137,16 @@ func piece(name: String, parent: Node3D, at := Vector3.ZERO, yaw := 0.0) -> Node
 	for b in n.find_children("*", "CollisionObject3D", true, false):
 		(b as CollisionObject3D).collision_layer = City.GROUND_LAYER
 		(b as CollisionObject3D).collision_mask = 0
+	# Same textured materials as the city kit (matched by material name).
+	var meshes := n.find_children("*", "MeshInstance3D", true, false)
+	if n is MeshInstance3D:
+		meshes.append(n)
+	for mi in meshes:
+		var m := (mi as MeshInstance3D).mesh
+		for i in m.get_surface_count():
+			var sm := m.surface_get_material(i)
+			if sm:
+				(mi as MeshInstance3D).set_surface_override_material(i, main.city.kit_mat(sm))
 	if n is CollisionObject3D:
 		(n as CollisionObject3D).collision_layer = City.GROUND_LAYER
 	return n
@@ -220,7 +230,7 @@ func site_pool(root: Node3D) -> void:
 	var sm := ShaderMaterial.new()
 	sm.shader = load("res://shaders/goo.gdshader")
 	goo.material_override = sm
-	goo.position.y = 0.22
+	goo.position.y = 0.03
 	root.add_child(goo)
 	var bubbles := CPUParticles3D.new()
 	bubbles.amount = 40
@@ -291,6 +301,14 @@ func site_vault(root: Node3D) -> void:
 
 func site_sanctum(root: Node3D) -> void:
 	if piece("Sanctum", root) != null:
+		# The roof is closed: warm lamps inside so it isn't dark.
+		for p: Vector3 in [Vector3(0, 5.6, 0.6), Vector3(-3.5, 3.5, -2.5), Vector3(2.5, 3.0, 3.0)]:
+			var l := OmniLight3D.new()
+			l.light_color = Color("ffd8a0")
+			l.light_energy = 1.6
+			l.omni_range = 8.0
+			l.position = p
+			root.add_child(l)
 		return
 	# Stand-in: a hall with a door, stairs up the left wall to a landing, and a
 	# balcony on the back wall with a gap in between.
@@ -505,7 +523,8 @@ func _physics_process(delta: float) -> void:
 			s.guards = []
 		if d < FIELD_R + 4.0 and not s.visited and main.play_mode and stone not in collected:
 			s.visited = true
-			main.banner("%s! %s" % [SITE_NAMES[STONES[stone].site], STONES[stone].hint])
+			var where: String = SITE_NAMES[STONES[stone].site]
+			main.banner("%s! %s" % [where[0].to_upper() + where.substr(1), STONES[stone].hint])
 	# The goo pool: touch it and you're back on the edge.
 	var pool = site_of("pool")
 	if pool and main.on_foot():

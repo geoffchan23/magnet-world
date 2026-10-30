@@ -229,24 +229,27 @@ def hydra_emblem(name, targets, origin, normal, up, size, m, lift=0.002, depth=0
     k = size
     eyes = [[(x * k, y * k) for x, y in circle_pts(0.125, 10, sx * 0.19, 0.25)] for sx in (-1, 1)]
     nose = [(-0.055 * k, -0.07 * k), (0.055 * k, -0.07 * k), (0.0, 0.05 * k)]
-    K = 1.2
+    K = 1.3
     sk = shape2d(name, [[(p[0] * k * K, p[1] * k * K) + tuple(p[2:]) for p in HYDRA_SKULL]] +
                  [[(x * K, y * K) for x, y in e] for e in eyes] + [[(x * K, y * K) for x, y in nose]], m, depth=depth,
                  bevel=0.0, res=2)
-    stick(sk, targets, origin, normal, up, lift=lift)
-    for i, (a, curl) in enumerate([(22, 1), (158, -1), (-22, -1), (202, 1), (-68, -1), (248, 1)]):
+    stick(sk, targets, origin, normal, up, lift=lift + 0.006)
+    for i, (a, curl) in enumerate([(-2, 1), (182, -1), (-38, 1), (218, -1), (-74, 1), (254, -1)]):
         left, right = [], []
-        n = 7
+        n = 11
+
+        def cen(t):
+            ang = math.radians(a) + curl * 1.1 * t ** 2.2
+            r = 0.25 + 0.85 * t
+            return Vector((math.cos(ang) * r, 0.05 + math.sin(ang) * r))
         for j in range(n + 1):
             t = j / n
-            ang = math.radians(a) + curl * 1.6 * t * t
-            r = 0.36 + 0.55 * t
-            c = Vector((math.cos(ang) * r, 0.15 + math.sin(ang) * r))
-            ang2 = math.radians(a) + curl * 1.6 * min(1, t + 0.05) ** 2
-            tan = Vector((-math.sin(ang2), math.cos(ang2))) * 1.0
-            w = 0.11 * (1 - t) + 0.028
-            left.append(c + tan * w)
-            right.append(c - tan * w)
+            c = cen(t)
+            d = (cen(min(1.0, t + 0.02)) - cen(max(0.0, t - 0.02))).normalized()
+            perp = Vector((-d.y, d.x))
+            w = 0.08 * (1 - t) + 0.032
+            left.append(c + perp * w)
+            right.append(c - perp * w)
         pts = [(p.x * k, p.y * k, 1) for p in left] + [(p.x * k, p.y * k, 1) for p in reversed(right)]
         tn = shape2d(f"{name}_Tentacle{i}", [pts], m, depth=depth, bevel=0.0, poly=True)
         stick(tn, targets, origin, normal, up, lift=lift + 0.003)
@@ -263,6 +266,40 @@ def bvh_of(objs):
     return BVHTree.FromPolygons(verts, polys)
 
 
+class Frame:
+    """A tangent frame on a surface: 2D (x, y) on a plane above it -> point/normal on the surface."""
+
+    def __init__(self, targets, origin, normal, up=(0, 0, 1)):
+        self.tree = bvh_of(targets if isinstance(targets, (list, tuple)) else [targets])
+        self.n = Vector(normal).normalized()
+        u = Vector(up)
+        self.u = (u - self.n * u.dot(self.n)).normalized()
+        self.r = self.u.cross(self.n)
+        self.o = Vector(origin)
+
+    def at(self, x, y, off=0.0):
+        p = self.o + self.r * x + self.u * y
+        hit, hn, _, dist = self.tree.ray_cast(p + self.n * 0.4, -self.n, 1.0)
+        if hit is None:
+            hit, hn = self.tree.find_nearest(p)[:2]
+        return hit + hn * off, hn
+
+
+def stroke(pts, w0, w1=None):
+    """Outline polygon of a tapered thick polyline (for tentacles, spider legs...)."""
+    w1 = w0 if w1 is None else w1
+    pts = [Vector(p) for p in pts]
+    left, right = [], []
+    for i, p in enumerate(pts):
+        a, b = pts[max(0, i - 1)], pts[min(len(pts) - 1, i + 1)]
+        d = (b - a).normalized()
+        perp = Vector((-d.y, d.x))
+        w = w0 + (w1 - w0) * i / (len(pts) - 1)
+        left.append(p + perp * w)
+        right.append(p - perp * w)
+    return [(p.x, p.y, 1) for p in left] + [(p.x, p.y, 1) for p in reversed(right)]
+
+
 def stick(o, targets, origin, normal, up=(0, 0, 1), lift=0.002, spin=0.0, subdiv=0):
     """Wrap a flat shape (local XY, thickness Z) onto the surface of `targets`, like a printed
     tampo decal standing proud of the surface. origin = a point roughly on/above the surface."""
@@ -277,8 +314,10 @@ def stick(o, targets, origin, normal, up=(0, 0, 1), lift=0.002, spin=0.0, subdiv
     me = o.data
     bm = bmesh.new()
     bm.from_mesh(me)
-    back = [f for f in bm.faces if f.normal.z < -0.95]
-    bmesh.ops.delete(bm, geom=back, context="FACES")
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    z0 = min(v.co.z for v in bm.verts)
+    back = [f for f in bm.faces if all(abs(v.co.z - z0) < 1e-5 for v in f.verts)]
+    bmesh.ops.delete(bm, geom=back, context="FACES_ONLY")
     bm.to_mesh(me)
     bm.free()
     if subdiv:
@@ -949,8 +988,295 @@ def hydra_agent():
     return dict(backdrop="f0dcdc", pivots=pivots, target=(0, 0, 0.58), dist=2.5, kind="aggressive person", budget=7000)
 
 
+# ====================================================================== 6. Ultron sentry
+def ultron_sentry():
+    reset("UltronSentry")
+    black, white = common_mats()
+    chrome = mat("Chrome", "dfe4ec", rough=0.26, metal=1.0, coat=0.5)
+    chrome2 = mat("ChromeShade", "aab2be", rough=0.3, metal=1.0, coat=0.4)
+    dark = mat("Gunmetal", "3c414c", rough=0.3, metal=0.8, coat=0.4)
+    darker = mat("Joint", "23262d", rough=0.35, metal=0.6, coat=0.4)
+    red = mat("RedGlow", "e00000", rough=0.2, coat=0.3, emit="ff0000", emit_strength=1.6)
+    red2 = mat("RedRing", "a80000", rough=0.25, coat=0.6, emit="ff0000", emit_strength=0.5)
+
+    HZ, HR = 0.97, (0.19, 0.172, 0.205)
+    hc = Vector((0, 0, HZ))
+    hfn = taper(1.0, 0.72)
+    with limb("Head"):
+        head = ell("Head", hc, HR, chrome, seg=28, ring=14, fn=hfn, hero=True)
+        # crest fin from the brow over the top, cheek plates, ear discs
+        tube("Crest", arc_on(hc, HR, [(0, -0.75, 0.62), (0, -0.3, 0.97), (0, 0.25, 0.97), (0, 0.7, 0.7)], lift=-0.004),
+             chrome2, r=0.022, radii=[0.5, 1, 1, 0.6], caps=True, br=2)
+        for s, side in sides():
+            cyl(f"Ear_{side}", (s * 0.185, 0.0, HZ - 0.01), 0.055, 0.03, dark, rot=Y90, seg=16)
+            cyl(f"Ear_{side}_Glow", (s * 0.2, 0.0, HZ - 0.01), 0.026, 0.01, red2, rot=Y90, seg=12)
+            # angled dark brow plate and an angry glowing eye
+            p, n = on(hc, HR, (s * 0.36, -1, 0.1), 0.0)
+            pts = [(-1.0, -0.15, 1), (0.25, 0.32), (1.0, 0.42, 1), (0.7, -0.18), (-0.3, -0.42)]
+            pts = [(x * s * 0.05, y * 0.034) + tuple(r[2:]) for (x, y, *r) in [(q[0], q[1]) + tuple(q[2:]) for q in pts]]
+            if s < 0:
+                pts = pts[::-1]
+            sock = shape2d(f"Eye_{side}_Socket", [[(x * 1.18, y * 1.3 + 0.002) + tuple(r) for (x, y, *r) in pts]], darker,
+                           depth=0.002, bevel=0.0, res=3)
+            stick(sock, head, p, n, lift=0.0, subdiv=1)
+            ey = shape2d(f"Eye_{side}", [pts], red, depth=0.002, bevel=0.0, res=3)
+            stick(ey, head, p, n, lift=0.004, subdiv=1)
+        tube("Nose_Ridge", arc_on(hc, HR, [(0, -1, 0.15), (0, -1, -0.05), (0, -1, -0.22)], lift=0.002), chrome2,
+             r=0.012, radii=[0.6, 1, 0.8])
+        # glowing jagged grin across the lower face
+        p, n = on(hc, HR, (0, -1, -0.42), 0.0)
+        g = []
+        for i in range(9):
+            x = -1 + i / 4
+            g.append((x * 0.075, (0.012 if i % 2 == 0 else -0.012) - 0.018 * (1 - x * x), 1))
+        g2 = [(x, y - 0.018 - 0.004 * (1 - (x / 0.075) ** 2), 1) for x, y, _ in reversed(g)]
+        mouth = shape2d("Grin", [g + g2], red, depth=0.002, bevel=0.0, poly=True)
+        stick(mouth, head, p, n, lift=0.003, subdiv=1)
+
+    with limb("Jaw"):
+        jc, jr = Vector((0, -0.085, HZ - 0.15)), (0.085, 0.07, 0.04)
+        ell("Jaw", jc, jr, chrome, seg=16, ring=8)
+        sph("Jaw_Chin", jc + Vector((0, -0.045, -0.006)), (0.045, 0.026, 0.03), chrome2)
+
+    TC, TR = Vector((0, 0, 0.57)), (0.185, 0.13, 0.18)
+    with limb("Body"):
+        torso = ell("Torso", TC, TR, chrome, seg=24, ring=12, fn=taper(1.0, 0.62), hero=True)
+        cyl("Neck", (0, 0, 0.77), 0.05, 0.12, darker, seg=12)
+        for k in range(3):
+            torus(f"Neck_Ring{k}", (0, 0, 0.74 + k * 0.03), 0.052, 0.008, dark, seg=12, mseg=4)
+        # chest plate seams in a V
+        for s_, side in sides():
+            tube(f"Chest_Seam_{side}", arc_on(TC, TR, [(s_ * 0.75, -1, 0.75), (s_ * 0.35, -1, 0.1), (s_ * 0.05, -1, -0.45)],
+                                              lift=0.0), darker, r=0.006, caps=False)
+        # glowing core
+        p, n = on(TC, TR, (0, -1, 0.15), 0.0)
+        cyl("Core_Housing", p + n * 0.004, 0.05, 0.03, darker, rot=aim(n), seg=18)
+        torus("Core_Ring", p + n * 0.02, 0.04, 0.009, red2, rot=aim(n), seg=18)
+        sph("Core", p + n * 0.018, (0.03, 0.03, 0.014), red, rot=aim(n), seg=14, ring=7)
+        # segmented abdomen, hips
+        for k, z in enumerate((0.43, 0.395)):
+            torus(f"Abs{k}", (0, 0, z), 0.12 - k * 0.006, 0.026, dark, scale=(1, 0.8, 1), seg=20)
+        ell("Hips", (0, 0, 0.36), (0.14, 0.11, 0.075), chrome, seg=20, ring=10)
+        p, n = on((0, 0, 0.36), (0.14, 0.11, 0.075), (0, -1, 0), 0.0)
+        box("Hips_Plate", p + n * 0.006, (0.06, 0.012, 0.05), chrome2, bevel=0.01)
+
+    SX, SZ = 0.215, 0.655
+    for s, side in sides():
+        with limb("Arm" + side):
+            sph(f"Shoulder_{side}", (s * 0.21, 0, 0.66), (0.06, 0.06, 0.06), darker)
+            hsph(f"Shoulder_{side}_Plate", (s * 0.22, 0, 0.672), (0.075, 0.072, 0.055), chrome,
+                 rot=Quaternion((0, 1, 0), s * 0.55), seg=16, ring=8)
+            cyl_between(f"UpperArm_{side}", (s * 0.225, 0, 0.64), (s * 0.245, -0.008, 0.55), 0.036, chrome, r2=0.032, seg=12)
+            sph(f"Elbow_{side}", (s * 0.247, -0.01, 0.545), (0.032, 0.032, 0.032), darker)
+            cyl_between(f"Forearm_{side}", (s * 0.249, -0.012, 0.54), (s * 0.258, -0.025, 0.445), 0.036, chrome2,
+                        r2=0.042, seg=12)
+            torus(f"Wrist_{side}", (s * 0.259, -0.026, 0.44), 0.035, 0.009, red2, seg=12, mseg=4)
+            sph(f"Hand_{side}", (s * 0.262, -0.03, 0.405), (0.045, 0.042, 0.05), chrome, seg=14, ring=7)
+            for f in range(3):
+                sph(f"Hand_{side}_Knuckle{f}", (s * 0.262 + (f - 1) * 0.022 * s, -0.064, 0.395),
+                    (0.012, 0.012, 0.016), chrome2, seg=8, ring=4)
+        with limb("Leg" + side):
+            sph(f"Hip_{side}", (s * 0.085, 0, 0.335), (0.05, 0.05, 0.05), darker)
+            cyl_between(f"Thigh_{side}", (s * 0.087, 0, 0.32), (s * 0.09, -0.004, 0.2), 0.052, chrome, r2=0.044, seg=14)
+            sph(f"Knee_{side}", (s * 0.09, -0.02, 0.19), (0.042, 0.036, 0.04), dark)
+            cyl_between(f"Shin_{side}", (s * 0.09, 0, 0.185), (s * 0.092, 0, 0.07), 0.044, chrome2, r2=0.05, seg=14)
+            box(f"Foot_{side}", (s * 0.092, -0.035, 0.035), (0.09, 0.17, 0.07), chrome, bevel=0.03)
+            box(f"Foot_{side}_Toe", (s * 0.092, -0.108, 0.025), (0.08, 0.04, 0.05), dark, bevel=0.016)
+
+    pivots = {"Body": (0, 0, 0), "Head": (0, 0, 0.78), "Jaw": (0, 0.0, HZ - 0.13),
+              "ArmL": (-SX, 0, SZ), "ArmR": (SX, 0, SZ), "LegL": (-0.085, 0, 0.335), "LegR": (0.085, 0, 0.335)}
+    return dict(backdrop="e6e1e4", pivots=pivots, parents={"Jaw": "Head"}, target=(0, 0, 0.6), dist=2.6,
+                kind="aggressive creature", budget=7000)
+
+
+# ====================================================================== 7. Symbiote
+VENOM_EYE = [(-0.42, 0.05), (-0.36, -0.28), (0.0, -0.42), (0.45, -0.22), (0.82, 0.25), (1.05, 0.78, 1), (0.5, 0.42),
+             (0.02, 0.32), (-0.34, 0.28)]
+
+
+def symbiote():
+    reset("Symbiote")
+    black, white = common_mats()
+    goo = mat("Symbiote", "151a2b", rough=0.08, coat=1.0, metal=0.0)
+    goo2 = mat("SymbioteSheen", "27304f", rough=0.12, coat=1.0)
+    eyew = mat("EyeWhite", "f6f8ff", rough=0.15, coat=0.9)
+    mouth = mat("MouthInside", "5a0f1e", rough=0.35, coat=0.5)
+    tooth = mat("Teeth", "fbf8ee", rough=0.2, coat=0.9)
+    tongue = mat("Tongue", "ff6f8f", rough=0.25, coat=0.7)
+    spider = mat("SpiderWhite", "eef2ff", rough=0.25, coat=0.8)
+
+    sq, rz = -0.5, 0.22
+    cz = -rz * (sq + (-1 - sq) * 0.35)
+    bc, br = Vector((0, 0, cz)), (0.3, 0.27, rz)
+    with limb("Body"):
+        bumps = [((0, 0, 1), 0.04, 0.6), ((0, -1, 0.35), 0.03, 0.5)]
+        for k in range(8):  # gloopy drips round the bottom edge
+            a = 2 * math.pi * k / 8 + 0.2
+            bumps.append(((math.cos(a), math.sin(a), -0.35), 0.022 + 0.012 * (k % 2), 0.2, (0, 0, -0.014)))
+        body = blob("Body", bc, br, goo, bumps, seg=40, ring=24, squash_below=sq)
+        sph("Puddle", (0, 0.0, 0.01), (0.33, 0.3, 0.014), goo2, seg=24, ring=6)
+        # big white Venom eyes
+        for s, side in sides():
+            pts = [(x * s * 0.1, y * 0.1) + tuple(r) for (x, y, *r) in VENOM_EYE]
+            if s < 0:
+                pts = pts[::-1]
+            e = shape2d(f"Eye_{side}", [pts], eyew, depth=0.003, bevel=0.0, res=3)
+            stick(e, body, (s * 0.088, -0.4, cz + 0.205), (s * 0.3, -1, 1.1), lift=0.001, subdiv=2)
+        # wide toothy grin
+        F = Frame(body, (0, -0.4, cz + 0.02), (0, -1, 0.15))
+        W = 0.19
+        upper = [(W * t, 0.025 - 0.02 * (1 - t * t)) for t in [i / 8 for i in range(-8, 9)]]
+        lower = [(W * t, 0.025 - 0.11 * (1 - t * t) ** 0.8) for t in [i / 8 for i in range(8, -9, -1)]]
+        mo = shape2d("Mouth", [[(x, y, 1) for x, y in upper + lower]], mouth, depth=0.003, bevel=0.0, poly=True)
+        stick(mo, body, F.o, F.n, (0, 0, 1), lift=0.0, subdiv=2)
+        for i in range(7):  # top teeth pointing down
+            t = -0.78 + i * 0.26
+            x, y = W * t, 0.025 - 0.02 * (1 - t * t)
+            p, n = F.at(x, y, 0.002)
+            cone(f"Tooth_Top{i}", p, -F.u + n * 0.25, 0.02, 0.045 - 0.014 * abs(t), tooth, seg=8)
+        for i in range(6):  # bottom teeth pointing up
+            t = -0.66 + i * 0.264
+            x, y = W * t, 0.025 - 0.11 * (1 - t * t) ** 0.8
+            p, n = F.at(x, y, 0.002)
+            cone(f"Tooth_Bot{i}", p, F.u + n * 0.25, 0.017, 0.036 - 0.01 * abs(t), tooth, seg=8)
+        # long goofy tongue lolling out the side
+        p0, n0 = F.at(0.05, -0.045, 0.0)
+        tube("Tongue", [p0 - n0 * 0.01, p0 + n0 * 0.04 + Vector((0.02, 0, -0.01)), p0 + n0 * 0.065 + Vector((0.06, 0, -0.045)),
+                        p0 + n0 * 0.065 + Vector((0.085, 0, -0.07))], tongue, r=0.026, radii=[0.9, 1, 0.95, 0.85], br=2)
+        # glossy highlights
+        for k, (d, sz) in enumerate([((-0.5, -0.5, 0.85), (0.06, 0.01, 0.025)), ((-0.3, -0.7, 0.75), (0.018, 0.006, 0.018))]):
+            decal(f"Shine_{k}", bc, br, d, sz, goo2, sink=0.1)
+        # white spider emblem on its back
+        Fb = Frame(body, (0, 0.4, cz + 0.2), (0, 1, 1.0), (0, 0, 1))
+        sp = []
+        sp.append(shape2d("Spider_Body", [circle_pts(0.032, 12, 0, -0.005)], spider, depth=0.002, bevel=0.0, poly=True))
+        sp.append(shape2d("Spider_Head", [circle_pts(0.02, 10, 0, 0.042)], spider, depth=0.002, bevel=0.0, poly=True))
+        for sx in (-1, 1):
+            for j, (a0, a1, a2) in enumerate([((0.02, 0.04), (0.08, 0.1), (0.1, 0.17)), ((0.025, 0.02), (0.1, 0.05), (0.15, 0.11)),
+                                              ((0.025, -0.01), (0.1, -0.04), (0.15, -0.1)), ((0.02, -0.03), (0.08, -0.09), (0.1, -0.16))]):
+                pts = [(sx * a0[0], a0[1]), (sx * a1[0], a1[1]), (sx * a2[0], a2[1])]
+                sp.append(shape2d(f"Spider_Leg{sx}{j}", [stroke(pts, 0.011, 0.006)], spider, depth=0.002, bevel=0.0,
+                                  poly=True))
+        for o in sp:
+            stick(o, body, Fb.o, Fb.n, (0, 0, 1), lift=0.002, subdiv=1)
+
+    # Blob parts (origins where they join the body so they squish into it): wiggly tendrils
+    with limb("BlobTop"):
+        top = Vector((0, 0.01, cz + rz))
+        sph("BlobTop", top + Vector((0, 0, 0.02)), (0.075, 0.07, 0.05), goo)
+        tube("BlobTop_Tendril", [top + Vector((0, 0, 0.03)), top + Vector((0.02, 0.01, 0.1)), top + Vector((-0.02, 0.02, 0.16)),
+                                  top + Vector((-0.06, 0.02, 0.17))], goo, r=0.032, radii=[1, 0.7, 0.45, 0.25], br=2)
+    for s, side in sides():
+        with limb("Blob" + side):
+            base = Vector((s * 0.27, -0.02, 0.11))
+            sph(f"Blob_{side}", base, (0.08, 0.07, 0.065), goo)
+            tube(f"Blob_{side}_Tendril", [base + Vector((s * 0.03, 0, 0.02)), base + Vector((s * 0.1, -0.02, 0.07)),
+                                           base + Vector((s * 0.13, -0.03, 0.15)), base + Vector((s * 0.1, -0.04, 0.2))], goo,
+                 r=0.03, radii=[1, 0.75, 0.5, 0.3], br=2)
+            sph(f"Blob_{side}_Drop", base + Vector((s * 0.07, -0.02, -0.07)), (0.04, 0.038, 0.035), goo)
+    with limb("BlobBack"):
+        bb = Vector((0.02, 0.26, 0.13))
+        sph("BlobBack", bb, (0.1, 0.07, 0.08), goo)
+        for k, sx in enumerate((-1, 1)):
+            tube(f"BlobBack_Tendril{k}", [bb + Vector((sx * 0.03, 0.03, 0.03)), bb + Vector((sx * 0.07, 0.1, 0.08)),
+                                          bb + Vector((sx * 0.06, 0.15, 0.16)), bb + Vector((sx * 0.02, 0.16, 0.2))], goo,
+                 r=0.026, radii=[1, 0.7, 0.45, 0.25], br=2)
+
+    pivots = {"Body": (0, 0, 0), "BlobTop": (0, 0.01, cz + rz - 0.01),
+              "BlobL": (-0.24, -0.02, 0.11), "BlobR": (0.24, -0.02, 0.11), "BlobBack": (0.02, 0.21, 0.12)}
+    return dict(backdrop="e4e2f0", pivots=pivots, target=(0, 0, 0.22), dist=1.75, yaw=28, kind="aggressive creature",
+                budget=6500)
+
+
+# ====================================================================== 8. Spider drone
+def spider_drone():
+    reset("SpiderDrone")
+    black, white = common_mats()
+    shell = mat("Carapace", "2a2e36", rough=0.18, metal=0.5, coat=0.9)
+    shell2 = mat("Underside", "1b1d22", rough=0.35, metal=0.5, coat=0.4)
+    green = mat("OscorpGreen", "2fa25a", rough=0.22, metal=0.3, coat=0.8)
+    gold = mat("Gold", "e0ad45", rough=0.22, metal=0.9, coat=0.4)
+    steel = mat("Steel", "aeb6c2", rough=0.22, metal=0.95, coat=0.3)
+    glow = mat("GreenGlow", "00d43a", rough=0.15, coat=0.3, emit="00ff3c", emit_strength=1.6)
+    glow2 = mat("GreenGlowSoft", "0a9a30", rough=0.2, coat=0.5, emit="00ff3c", emit_strength=0.5)
+
+    bcen = Vector((0, 0.03, 0.3))
+    with limb("Body"):
+        hull = ell("Hull", bcen, (0.19, 0.21, 0.1), shell, seg=28, ring=14, hero=True,
+                   fn=lambda d: (1.0, 1.0, 1.0 if d.z > 0 else 0.7))
+        ell("Hull_Green", bcen + Vector((0, 0, 0.004)), (0.193, 0.213, 0.1), green, seg=28, ring=14,
+            fn=lambda d: (1.0, 1.0, 1.0), keep=lambda d: abs(d.z) < 0.28)
+        # raised spine plates and gold trim
+        for k, (y, w) in enumerate([(-0.1, 0.06), (0.0, 0.075), (0.1, 0.06)]):
+            p, n = on(bcen, (0.19, 0.21, 0.1), (0, y / 0.21, 1), 0.0)
+            box(f"Spine_Plate{k}", p + n * 0.006, (w * 1.6, 0.06, 0.02), shell2, bevel=0.008, rot=facing(n) @ X90.inverted()
+                if False else Quaternion((1, 0, 0), -y * 2.5))
+            box(f"Spine_Glow{k}", p + n * 0.017, (w * 0.9, 0.02, 0.008), glow2, bevel=0.003,
+                rot=Quaternion((1, 0, 0), -y * 2.5))
+        sph("Underside", bcen + Vector((0, 0, -0.045)), (0.15, 0.17, 0.05), shell2)
+        # abdomen pod with a glowing hex core
+        ac, ar = Vector((0, 0.27, 0.33)), (0.14, 0.16, 0.12)
+        ell("Abdomen", ac, ar, shell, seg=24, ring=12, fn=lambda d: (1.0, 1.0, 1.0 if d.z > 0 else 0.8))
+        for k, dy in enumerate((-0.06, 0.05)):
+            f = math.sqrt(1 - (dy / ar[1]) ** 2)
+            torus(f"Abdomen_Band{k}", ac + Vector((0, dy, 0)), ar[0] * f, 0.012, gold, rot=(math.pi / 2, 0, 0),
+                  scale=(1, ar[2] / ar[0], 1), seg=20)
+        p, n = on(ac, ar, (0, 0.1, 1), 0.0)
+        cyl("Core_Housing", p, 0.05, 0.03, shell2, rot=aim(n), seg=6, bevel=0.006)
+        cyl("Core", p + n * 0.016, 0.036, 0.012, glow, rot=aim(n), seg=6, bevel=0.003)
+        cyl("Stinger_Base", ac + Vector((0, 0.15, -0.03)), 0.03, 0.04, gold, rot=aim((0, 1, 0.2)), seg=10)
+        cone("Stinger", ac + Vector((0, 0.17, -0.025)), (0, 1, -0.3), 0.022, 0.07, steel, seg=8)
+
+    with limb("Head"):
+        tc = Vector((0, -0.2, 0.31))
+        head = ell("Head", tc, (0.105, 0.09, 0.075), shell, seg=20, ring=10)
+        ell("Head_Visor", tc + Vector((0, -0.01, 0.0)), (0.108, 0.093, 0.078), green, seg=20, ring=10,
+            keep=lambda d: d.z > 0.35)
+        # cluster of glowing eyes: two big, four small
+        for s in (-1, 1):
+            p, n = on(tc, (0.105, 0.09, 0.075), (s * 0.35, -1, 0.15), 0.0)
+            cyl(f"Eye_Big{s}_Rim", p, 0.03, 0.016, gold, rot=aim(n), seg=14)
+            sph(f"Eye_Big{s}", p + n * 0.008, (0.024, 0.024, 0.012), glow, rot=aim(n))
+            sph(f"Eye_Big{s}_Shine", p + n * 0.016 + Vector((-0.008, 0, 0.008)), (0.006, 0.003, 0.006), white)
+            for k, (dx, dz) in enumerate([(0.7, 0.35), (0.75, -0.15)]):
+                p2, n2 = on(tc, (0.105, 0.09, 0.075), (s * dx, -1, dz), 0.0)
+                sph(f"Eye_Small{s}{k}", p2, (0.012, 0.008, 0.012), glow, rot=facing(n2))
+            # gold pincer mandibles
+            m0 = tc + Vector((s * 0.035, -0.075, -0.04))
+            tube(f"Mandible{s}", [m0, m0 + Vector((s * 0.02, -0.03, -0.02)), m0 + Vector((-s * 0.005, -0.055, -0.03))], gold,
+                 r=0.011, radii=[1, 0.8, 0.4])
+
+    for s, side in sides():
+        for i, a in enumerate((-48, -16, 16, 46)):
+            ar_ = math.radians(a)
+            d = Vector((s * math.cos(ar_), math.sin(ar_), 0))
+            hip = bcen + Vector((d.x * 0.17, d.y * 0.19, 0.0))
+            knee = hip + d * 0.17 + Vector((0, 0, 0.15))
+            foot = hip + d * 0.36 + Vector((0, 0, -0.3 + 0.004))
+            nm = f"Leg{side}{i + 1}"
+            with limb(nm):
+                sph(f"{nm}_Hip", hip, (0.036, 0.036, 0.036), gold)
+                tube(f"{nm}_Femur", [hip, hip + d * 0.07 + Vector((0, 0, 0.12)), knee], shell, r=0.022, caps=False, br=2)
+                for k, t in enumerate((0.35, 0.65)):  # segment rings, Doc Ock style
+                    pos = hip.lerp(knee, t) + Vector((0, 0, 0.035 if t < 0.5 else 0.03))
+                    torus(f"{nm}_Ring{k}", pos, 0.025, 0.009, green, rot=aim(knee - hip), seg=10, mseg=4)
+                sph(f"{nm}_Knee", knee, (0.03, 0.03, 0.03), gold)
+                tube(f"{nm}_Shin", [knee, knee + d * 0.11 + Vector((0, 0, -0.1)), foot + Vector((0, 0, 0.04))], shell,
+                     r=0.022, radii=[1, 0.85, 0.6], caps=False, br=2)
+                sph(f"{nm}_Ankle", foot + Vector((0, 0, 0.04)), (0.016, 0.016, 0.016), green)
+                cone(f"{nm}_Claw", foot + Vector((0, 0, 0.045)), (d.x * 0.25, d.y * 0.25, -1), 0.016, 0.05, steel, seg=8)
+
+    pivots = {"Body": (0, 0, 0), "Head": (0, -0.14, 0.3)}
+    for s, side in sides():
+        for i, a in enumerate((-48, -16, 16, 46)):
+            ar_ = math.radians(a)
+            pivots[f"Leg{side}{i + 1}"] = (bcen.x + s * math.cos(ar_) * 0.17, bcen.y + math.sin(ar_) * 0.19, bcen.z)
+    return dict(backdrop="dfe8e2", pivots=pivots, target=(0, 0.02, 0.22), dist=2.0, yaw=35, pitch=22,
+                kind="aggressive creature", budget=6000)
+
+
 # ====================================================================== runner
-CHARS = {"civilian": civilian, "shield_agent": shield_agent, "nick_fury": nick_fury, "lucky": lucky, "hydra_agent": hydra_agent}
+CHARS = {"civilian": civilian, "shield_agent": shield_agent, "nick_fury": nick_fury, "lucky": lucky, "hydra_agent": hydra_agent, "ultron_sentry": ultron_sentry, "symbiote": symbiote, "spider_drone": spider_drone}
 
 
 def build(name, budget=6000):
